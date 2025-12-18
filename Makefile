@@ -205,17 +205,31 @@ upload: build
 
 # -----------------------------------------------------------------------------#
 # Version & Release helpers (setuptools_scm + Git tags)
+# -----------------------------------------------------------------------------#
+# Version & Release helpers (setuptools_scm + Git tags)
+
 fetch-tags:
-	git fetch --tags --force --prune 2>/dev/null || true
+	@git fetch --tags --force --prune 2>/dev/null || true
 
 LAST_TAG := $(strip $(shell git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname | head -n 1))
 ifeq ($(LAST_TAG),)
 LAST_TAG := v0.0.0
 endif
 
-MAJOR := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
-MINOR := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
-PATCH := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+).*/\1/')
+# Robust parsing (avoid sed portability issues on Git Bash/Windows)
+MAJOR := $(shell sh -lc 't="$(LAST_TAG)"; t="$${t#v}"; echo "$${t%%.*}"')
+MINOR := $(shell sh -lc 't="$(LAST_TAG)"; t="$${t#v}"; t="$${t#*.}"; echo "$${t%%.*}"')
+PATCH := $(shell sh -lc 't="$(LAST_TAG)"; t="$${t#v}"; t="$${t#*.*.}"; echo "$${t%%[^0-9]*}"')
+
+ifeq ($(strip $(MAJOR)),)
+MAJOR := 0
+endif
+ifeq ($(strip $(MINOR)),)
+MINOR := 0
+endif
+ifeq ($(strip $(PATCH)),)
+PATCH := 0
+endif
 
 version: $(ENV_STAMP)
 	@"$(PY)" -m setuptools_scm || true
@@ -245,6 +259,7 @@ release-show: fetch-tags $(ENV_STAMP)
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
 	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
 	@echo "Last Git tag: $(LAST_TAG)"
+	@echo "Parsed: MAJOR=$(MAJOR) MINOR=$(MINOR) PATCH=$(PATCH)"
 
 check-clean:
 	@if ! git diff --quiet || ! git diff --cached --quiet; then \
@@ -252,7 +267,7 @@ check-clean:
 	  git status -s; \
 	  exit 1; \
 	fi
-	@if [ "$(git rev-parse @ 2>/dev/null)" != "$(git rev-parse @{u} 2>/dev/null)" ]; then \
+	@if [ "$$(git rev-parse @ 2>/dev/null)" != "$$(git rev-parse @{u} 2>/dev/null)" ]; then \
 	  echo "❌ Local branch not in sync with upstream (push/pull first)."; \
 	  exit 1; \
 	fi
@@ -260,22 +275,25 @@ check-clean:
 NL := $(shell printf "\n")
 
 release-patch: fetch-tags check-clean
-	@NEW="v$(MAJOR).$(MINOR).$(($(PATCH) + 1))"; \
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"; \
-	git push origin "$NEW"; \
-	echo "Tagged $NEW"
+	@NEW="v$(MAJOR).$(MINOR).$$(($(PATCH) + 1))"; \
+	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
 
 release-minor: fetch-tags check-clean
-	@NEW="v$(MAJOR).$(($(MINOR) + 1)).0"; \
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"; \
-	git push origin "$NEW"; \
-	echo "Tagged $NEW"
+	@NEW="v$(MAJOR).$$(($(MINOR) + 1)).0"; \
+	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
 
 release-major: fetch-tags check-clean
-	@NEW="v$(($(MAJOR) + 1)).0.0"; \
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"; \
-	git push origin "$NEW"; \
-	echo "Tagged $NEW"
+	@NEW="v$$(($(MAJOR) + 1)).0.0"; \
+	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
 
 release: fetch-tags $(ENV_STAMP)
 	@echo "=== Running full test suite before release ==="
@@ -293,6 +311,7 @@ release: fetch-tags $(ENV_STAMP)
 	  echo "Unknown KIND=$(KIND). Use: patch | minor | major"; \
 	  exit 1; \
 	fi
+
 
 # -----------------------------------------------------------------------------#
 # CLI convenience
