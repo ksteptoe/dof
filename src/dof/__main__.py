@@ -1,5 +1,4 @@
-"""  Convenience wrapper for dof to run directly from source tree
-"""
+"""Convenience wrapper for dof to run directly from source tree."""
 
 from dof.cli import cli
 
