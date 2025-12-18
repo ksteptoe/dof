@@ -26,7 +26,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from dof import __version__
+from . import __version__
 
 _logger = logging.getLogger(__name__)
 
@@ -155,15 +155,34 @@ def _infer_file_type(suffix: str) -> str:
     return s.lstrip(".").upper() if s else "UNKNOWN"
 
 
-def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+def _hash_changed(old: Optional[str], new: Optional[str]) -> bool:
+    # Can't read it now => don't claim it's changed.
+    if new is None:
+        return False
+
+    # Couldn't read it before, but can now => treat as "no change"
+    # (we just improved metadata; we don't know if content changed earlier)
+    if old is None:
+        return False
+
+    # Both are real hashes -> a true content change is detectable.
+    return old != new
+
+
+def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _safe_sha256_file(path: Path) -> Optional[str]:
+    try:
+        return _sha256_file(path)
+    except (PermissionError, OSError):
+        # OneDrive/Excel locks, cloud placeholders, transient IO, etc.
+        return None
 
 
 def _build_sharepoint_url(base: Optional[str], rel_location_posix: str, abs_path: Path) -> str:
@@ -199,7 +218,7 @@ def discover_documents(root_dir: Path, suffixes: Optional[Iterable[str]] = None)
                 filename=p.name,
                 suffix=suffix,
                 file_type=_infer_file_type(suffix),
-                sha256=_sha256_file(p),
+                sha256=_safe_sha256_file(p),
             )
         )
 
@@ -395,25 +414,25 @@ def create_or_update_treasure_map(
         loc = f.rel_location
         prev_sha = meta.get(loc)
 
-        if loc in existing_rows and prev_sha == f.sha256:
-            # identical -> no change
-            continue
+        if loc in existing_rows:
+            # 1) Identical (including both None) -> no change
+            if prev_sha == f.sha256:
+                continue
 
-        if loc in existing_rows and prev_sha and prev_sha != f.sha256:
-            # changed -> update Date Found + bump Version only (no other change)
-            row = updated_rows[loc]
-            row["Date Found"] = today
-            row["Version"] = _bump_version(row.get("Version"))
-            meta[loc] = f.sha256
-            continue
+            # 2) Real, provable content change -> bump date+version only
+            if _hash_changed(prev_sha, f.sha256):
+                row = updated_rows[loc]
+                row["Date Found"] = today
+                row["Version"] = _bump_version(row.get("Version"))
+                meta[loc] = f.sha256
+                continue
 
-        if loc in existing_rows and not prev_sha:
-            # Back-compat: workbook exists but no stored hash for this row.
-            # Be conservative: treat as "changed" and start tracking now.
-            row = updated_rows[loc]
-            row["Date Found"] = today
-            row["Version"] = _bump_version(row.get("Version"))
-            meta[loc] = f.sha256
+            # 3) Previously unhashed but now hashed -> record hash, no bump
+            if prev_sha is None and f.sha256 is not None:
+                meta[loc] = f.sha256
+                continue
+
+            # 4) Hashed before but unreadable now (new is None) -> no change
             continue
 
         # New file -> create a new row
