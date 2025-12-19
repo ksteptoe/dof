@@ -15,7 +15,7 @@ def _write(p: Path, content: bytes) -> None:
 
 def _headers(ws) -> dict[str, int]:
     """Return mapping header -> 1-based column index."""
-    hdr = {}
+    hdr: dict[str, int] = {}
     for i, c in enumerate(ws[1], start=1):
         if c.value:
             hdr[str(c.value)] = i
@@ -23,10 +23,17 @@ def _headers(ws) -> dict[str, int]:
 
 
 def _rows_by_location(ws, loc_col: int) -> dict[str, int]:
-    return {str(ws.cell(r, loc_col).value): r for r in range(2, ws.max_row + 1) if ws.cell(r, loc_col).value}
+    """Return mapping location string -> row index."""
+    out: dict[str, int] = {}
+    for r in range(2, ws.max_row + 1):
+        v = ws.cell(r, loc_col).value
+        if v:
+            out[str(v)] = r
+    return out
 
 
 def _cell_date(ws, row: int, col: int) -> date:
+    """Return cell value as a date (asserts value is present)."""
     v = ws.cell(row, col).value
     assert v is not None, f"Expected date in r{row}c{col}, got None"
     return v.date()
@@ -38,6 +45,8 @@ def test_treasure_map_full_lifecycle_create_update_delete(tmp_path: Path) -> Non
     1) New treasuremap creation
     2) Update preserves Date Found + Description, updates Last Seen, bumps Version on change
     3) Deletion removed from map when prune_missing=True
+    Also checks:
+    - When prune_missing=False and a file is missing, its row remains AND Last Seen does not advance.
     """
     root = tmp_path / "root"
     _write(root / "a.pdf", b"%PDF-1.4\nhello\n")
@@ -132,7 +141,8 @@ def test_treasure_map_full_lifecycle_create_update_delete(tmp_path: Path) -> Non
     assert ws3.cell(r_a_3, h3["Version"]).value == "1.1"
     assert ws3.cell(r_a_3, h3["Description"]).value == "Important doc"
 
-    # --- 3) Deletion removed when prune_missing=True --------------------------
+    # --- 3) Missing file with prune_missing=False:
+    # Row should remain and Last Seen should NOT advance for the missing file.
     (root / "sub" / "b.xlsx").unlink()
 
     d4 = date(2025, 12, 21)
@@ -141,7 +151,7 @@ def test_treasure_map_full_lifecycle_create_update_delete(tmp_path: Path) -> Non
         output_xlsx=out,
         sharepoint_base_url="https://sp.example/doclib",
         today=d4,
-        prune_missing=True,
+        prune_missing=False,
     )
 
     wb4 = load_workbook(out)
@@ -149,22 +159,50 @@ def test_treasure_map_full_lifecycle_create_update_delete(tmp_path: Path) -> Non
     h4 = _headers(ws4)
     rows4 = _rows_by_location(ws4, h4["Location"])
 
-    assert "sub/b.xlsx" not in rows4
-    assert "a.pdf" in rows4
-    assert "sub/c.text" in rows4
+    assert "sub/b.xlsx" in rows4  # still present in the sheet
+    r_b_4 = rows4["sub/b.xlsx"]
 
-    # Remaining files should have Last Seen updated to d4
+    # Last Seen should remain whatever it was on the last run when it existed (d3)
+    assert _cell_date(ws4, r_b_4, h4["Last Seen"]) == d3
+
+    # Files that still exist should have Last Seen updated to d4
     assert _cell_date(ws4, rows4["a.pdf"], h4["Last Seen"]) == d4
     assert _cell_date(ws4, rows4["sub/c.text"], h4["Last Seen"]) == d4
+
+    # --- 4) Deletion removed when prune_missing=True --------------------------
+    d5 = date(2025, 12, 22)
+    create_or_update_treasure_map(
+        root_dir=root,
+        output_xlsx=out,
+        sharepoint_base_url="https://sp.example/doclib",
+        today=d5,
+        prune_missing=True,
+    )
+
+    wb5 = load_workbook(out)
+    ws5 = wb5[MAIN_SHEET_NAME]
+    h5 = _headers(ws5)
+    rows5 = _rows_by_location(ws5, h5["Location"])
+
+    assert "sub/b.xlsx" not in rows5
+    assert "a.pdf" in rows5
+    assert "sub/c.text" in rows5
+
+    # Remaining files should have Last Seen updated to d5
+    assert _cell_date(ws5, rows5["a.pdf"], h5["Last Seen"]) == d5
+    assert _cell_date(ws5, rows5["sub/c.text"], h5["Last Seen"]) == d5
+
+    # Description should still be preserved
+    assert ws5.cell(rows5["a.pdf"], h5["Description"]).value == "Important doc"
 
 
 def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
     """
-    4) .treasureignore entries for:
-       - directories
-       - individual files
-       - wildcards
-       - (bonus) negation, last-match-wins
+    .treasureignore entries for:
+      - directories
+      - individual files
+      - wildcards
+      - negation (!), last-match-wins
     """
     root = tmp_path / "root"
     root.mkdir()
@@ -174,9 +212,9 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
     _write(root / "notes.txt", b"notes")
     _write(root / "sub" / "ok.docx", b"docx")
 
-    # Files/dirs we will ignore via rules
+    # Files/dirs we will ignore via rules (use only suffixes that are in DEFAULT_DOCUMENT_SUFFIXES)
     _write(root / "secret.pdf", b"secret")  # individual file rule
-    _write(root / "tmp.tmp", b"tmp")  # wildcard *.tmp rule
+    _write(root / "scratch.txt", b"scratch")  # wildcard *.txt rule (instead of *.tmp)
     _write(root / "build" / "out.pdf", b"build")  # directory rule build/
     _write(root / "sub" / "cache1" / "x.pdf", b"cache1")  # wildcard dir rule sub/cache*/
     _write(root / "sub" / "cache2" / "y.pdf", b"cache2")  # wildcard dir rule sub/cache*/
@@ -195,7 +233,7 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
     assert "notes.txt" in locs1
     assert "sub/ok.docx" in locs1
     assert "secret.pdf" in locs1
-    assert "tmp.tmp" in locs1
+    assert "scratch.txt" in locs1
     assert "build/out.pdf" in locs1
     assert "sub/cache1/x.pdf" in locs1
     assert "sub/cache2/y.pdf" in locs1
@@ -204,7 +242,7 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
     # Add ignore rules:
     # - build/ directory
     # - secret.pdf individual file
-    # - *.tmp wildcard
+    # - *.txt wildcard (will ignore notes.txt and scratch.txt)
     # - sub/cache*/ wildcard directories
     # - but allow one file back via negation
     (root / ".treasureignore").write_text(
@@ -212,7 +250,7 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
             [
                 "build/",
                 "secret.pdf",
-                "*.tmp",
+                "*.txt",
                 "sub/cache*/",
                 "!sub/cache1/keep.pdf",
             ]
@@ -221,7 +259,7 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    # Re-run: ignored entries should be removed even without prune_missing
+    # Re-run: ignored entries should be removed from the map even without prune_missing
     create_or_update_treasure_map(root_dir=root, output_xlsx=out, today=date(2025, 12, 19), prune_missing=False)
 
     wb2 = load_workbook(out)
@@ -231,12 +269,12 @@ def test_treasureignore_directories_files_and_wildcards(tmp_path: Path) -> None:
 
     # Kept
     assert "keep.pdf" in locs2
-    assert "notes.txt" in locs2
     assert "sub/ok.docx" in locs2
 
     # Ignored
     assert "secret.pdf" not in locs2
-    assert "tmp.tmp" not in locs2
+    assert "notes.txt" not in locs2
+    assert "scratch.txt" not in locs2
     assert "build/out.pdf" not in locs2
     assert "sub/cache1/x.pdf" not in locs2
     assert "sub/cache2/y.pdf" not in locs2
