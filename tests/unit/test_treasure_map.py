@@ -55,8 +55,14 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
     assert ws.cell(r, 1).value == "a.pdf"
     assert ws.cell(r, 2).value == "PDF"
     assert (ws.cell(r, 3).value or "") == ""
-    assert ws.cell(r, 4).value.date() == d1  # Date Found (first seen)
-    assert ws.cell(r, 5).value.date() == d1  # Last Seen
+
+    df_cell = ws.cell(r, 4).value
+    ls_cell = ws.cell(r, 5).value
+    assert df_cell is not None
+    assert ls_cell is not None
+    assert df_cell.date() == d1  # Date Found (first seen)
+    assert ls_cell.date() == d1  # Last Seen
+
     assert ws.cell(r, 7).value == "1.0"  # Version
 
     link_cell = ws.cell(r, 6)  # Link is now column 6
@@ -77,9 +83,38 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
     ws2 = wb2[MAIN_SHEET_NAME]
     rows2 = {ws2.cell(r, 8).value: r for r in range(2, ws2.max_row + 1)}
     r2 = rows2["a.pdf"]
-    assert ws2.cell(r2, 4).value.date() == d1  # Date Found unchanged
-    assert ws2.cell(r2, 5).value.date() == d2  # Last Seen updated
+
+    df2 = ws2.cell(r2, 4).value
+    ls2 = ws2.cell(r2, 5).value
+    assert df2 is not None
+    assert ls2 is not None
+    assert df2.date() == d1  # Date Found unchanged
+    assert ls2.date() == d2  # Last Seen updated
     assert ws2.cell(r2, 7).value == "1.0"  # Version unchanged
+
+    # Modify file and re-run:
+    # Date Found stays first-seen, Version bumps, Last Seen updates
+    _write(root / "a.pdf", b"%PDF-1.4\nhello changed\n")
+    d3 = date(2025, 12, 20)
+    create_or_update_treasure_map(
+        root_dir=root,
+        output_xlsx=out,
+        sharepoint_base_url="https://sp.example/doclib",
+        today=d3,
+    )
+
+    wb3 = load_workbook(out)
+    ws3 = wb3[MAIN_SHEET_NAME]
+    rows3 = {ws3.cell(r, 8).value: r for r in range(2, ws3.max_row + 1)}
+    r3 = rows3["a.pdf"]
+
+    df3 = ws3.cell(r3, 4).value
+    ls3 = ws3.cell(r3, 5).value
+    assert df3 is not None
+    assert ls3 is not None
+    assert df3.date() == d1  # Date Found unchanged
+    assert ls3.date() == d3  # Last Seen updated
+    assert ws3.cell(r3, 7).value == "1.1"  # Version bumped
 
     # Modify file and re-run:
     # Date Found stays first-seen, Version bumps, Last Seen updates
