@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import sys
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, tempfile
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
@@ -128,6 +129,38 @@ class FoundFile:
     suffix: str
     file_type: str
     sha256: Optional[str]
+
+
+def _safe_save_workbook(wb, dest: Path) -> Path:
+    """Save workbook safely.
+
+    Writes to a temp file first, then attempts atomic replace.
+    If destination is locked (e.g., open in Excel / OneDrive lock), writes to *.NEW.xlsx.
+    """
+    dest = dest.resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(prefix=dest.stem + ".", suffix=".tmp.xlsx", dir=str(dest.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
+    try:
+        wb.save(tmp_path)
+
+        try:
+            tmp_path.replace(dest)  # atomic on same filesystem
+            return dest
+        except PermissionError:
+            alt = dest.with_name(dest.stem + ".NEW" + dest.suffix)
+            tmp_path.replace(alt)
+            return alt
+    finally:
+        # Cleanup if anything went wrong and tmp still exists
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def setup_logging(loglevel: Optional[int]) -> None:
@@ -388,7 +421,16 @@ def _autosize_columns(ws: Worksheet, mapping: Dict[str, int], max_width: int = 8
 
 def _load_or_create_workbook(output_xlsx: Path) -> Tuple[Workbook, Worksheet, Worksheet]:
     if output_xlsx.exists():
-        wb = load_workbook(output_xlsx)
+        try:
+            wb = load_workbook(output_xlsx)
+        except PermissionError:
+            _logger.warning(
+                "Cannot open %s (locked/open in Excel). Will create a new workbook output.",
+                output_xlsx,
+            )
+            wb = Workbook()
+    else:
+        wb = Workbook()
         ws = wb[MAIN_SHEET_NAME] if MAIN_SHEET_NAME in wb.sheetnames else wb.active
         if META_SHEET_NAME in wb.sheetnames:
             meta_ws = wb[META_SHEET_NAME]
@@ -606,9 +648,16 @@ def create_or_update_treasure_map(
     _autosize_columns(ws, mapping)
     _write_meta(meta_ws, meta)
 
-    wb.save(output_xlsx)
-    _logger.info("Wrote %s", output_xlsx)
-    return output_xlsx
+    written = _safe_save_workbook(wb, output_xlsx)
+    _logger.info("Wrote %s", written)
+
+    if written != output_xlsx:
+        _logger.warning(
+            "Destination was locked (likely open in Excel). Wrote to %s instead.",
+            written,
+        )
+
+    return written
 
 
 def dof_api(
