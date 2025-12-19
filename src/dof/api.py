@@ -421,25 +421,42 @@ def _autosize_columns(ws: Worksheet, mapping: Dict[str, int], max_width: int = 8
 
 
 def _load_or_create_workbook(output_xlsx: Path) -> Tuple[Workbook, Worksheet, Worksheet]:
+    """Load an existing workbook if possible, otherwise create a new one.
+
+    Returns (wb, main_ws, meta_ws).
+    """
     if output_xlsx.exists():
         try:
             wb = load_workbook(output_xlsx)
         except PermissionError:
             _logger.warning(
-                "Cannot open %s (locked/open in Excel). Will create a new workbook output.",
+                "Cannot open %s (locked/open in Excel). Cannot preserve existing Description values.",
                 output_xlsx,
             )
             wb = Workbook()
-    else:
-        wb = Workbook()
-        ws = wb[MAIN_SHEET_NAME] if MAIN_SHEET_NAME in wb.sheetnames else wb.active
+            ws = wb.active
+            ws.title = MAIN_SHEET_NAME
+            meta_ws = wb.create_sheet(META_SHEET_NAME)
+            meta_ws.sheet_state = "hidden"
+            return wb, ws, meta_ws
+
+        # Main sheet
+        if MAIN_SHEET_NAME in wb.sheetnames:
+            ws = wb[MAIN_SHEET_NAME]
+        else:
+            ws = wb.active
+            ws.title = MAIN_SHEET_NAME
+
+        # Meta sheet
         if META_SHEET_NAME in wb.sheetnames:
             meta_ws = wb[META_SHEET_NAME]
         else:
             meta_ws = wb.create_sheet(META_SHEET_NAME)
             meta_ws.sheet_state = "hidden"
+
         return wb, ws, meta_ws
 
+    # New workbook
     wb = Workbook()
     ws = wb.active
     ws.title = MAIN_SHEET_NAME
