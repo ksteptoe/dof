@@ -30,12 +30,13 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
 
     wb = load_workbook(out)
     ws = wb[MAIN_SHEET_NAME]
-    headers = [c.value for c in ws[1][:7]]
+    headers = [c.value for c in ws[1][:8]]
     assert headers == [
         "File Name",
         "File Type",
         "Description",
         "Date Found",
+        "Last Seen",
         "Link",
         "Version",
         "Location",
@@ -44,8 +45,8 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
     # 3 rows + header
     assert ws.max_row == 4
 
-    # Find row by Location
-    rows = {ws.cell(r, 7).value: r for r in range(2, ws.max_row + 1)}
+    # Find row by Location (Location is now column 8)
+    rows = {ws.cell(r, 8).value: r for r in range(2, ws.max_row + 1)}
     assert "a.pdf" in rows
     assert "sub/b.xlsx" in rows
     assert "sub/c.text" in rows
@@ -54,15 +55,17 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
     assert ws.cell(r, 1).value == "a.pdf"
     assert ws.cell(r, 2).value == "PDF"
     assert (ws.cell(r, 3).value or "") == ""
-    assert ws.cell(r, 4).value.date() == d1
-    assert ws.cell(r, 6).value == "1.0"
+    assert ws.cell(r, 4).value.date() == d1  # Date Found (first seen)
+    assert ws.cell(r, 5).value.date() == d1  # Last Seen
+    assert ws.cell(r, 7).value == "1.0"  # Version
 
-    link_cell = ws.cell(r, 5)
+    link_cell = ws.cell(r, 6)  # Link is now column 6
     assert link_cell.value == "a.pdf"
     assert link_cell.hyperlink is not None
     assert link_cell.hyperlink.target.endswith("/a.pdf")
 
-    # Run again unchanged with a different date: no changes expected
+    # Run again unchanged with a different date:
+    # Date Found stays the same, Version stays the same, Last Seen updates
     d2 = date(2025, 12, 19)
     create_or_update_treasure_map(
         root_dir=root,
@@ -72,12 +75,14 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
     )
     wb2 = load_workbook(out)
     ws2 = wb2[MAIN_SHEET_NAME]
-    rows2 = {ws2.cell(r, 7).value: r for r in range(2, ws2.max_row + 1)}
+    rows2 = {ws2.cell(r, 8).value: r for r in range(2, ws2.max_row + 1)}
     r2 = rows2["a.pdf"]
-    assert ws2.cell(r2, 4).value.date() == d1
-    assert ws2.cell(r2, 6).value == "1.0"
+    assert ws2.cell(r2, 4).value.date() == d1  # Date Found unchanged
+    assert ws2.cell(r2, 5).value.date() == d2  # Last Seen updated
+    assert ws2.cell(r2, 7).value == "1.0"  # Version unchanged
 
-    # Modify file and re-run: Date Found updates and Version bumps
+    # Modify file and re-run:
+    # Date Found stays first-seen, Version bumps, Last Seen updates
     _write(root / "a.pdf", b"%PDF-1.4\nhello changed\n")
     d3 = date(2025, 12, 20)
     create_or_update_treasure_map(
@@ -89,10 +94,11 @@ def test_create_and_update_treasure_map(tmp_path: Path) -> None:
 
     wb3 = load_workbook(out)
     ws3 = wb3[MAIN_SHEET_NAME]
-    rows3 = {ws3.cell(r, 7).value: r for r in range(2, ws3.max_row + 1)}
+    rows3 = {ws3.cell(r, 8).value: r for r in range(2, ws3.max_row + 1)}
     r3 = rows3["a.pdf"]
-    assert ws3.cell(r3, 4).value.date() == d3
-    assert ws3.cell(r3, 6).value == "1.1"
+    assert ws3.cell(r3, 4).value.date() == d1  # Date Found unchanged
+    assert ws3.cell(r3, 5).value.date() == d3  # Last Seen updated
+    assert ws3.cell(r3, 7).value == "1.1"  # Version bumped
 
 
 def test_prune_missing_removes_deleted_files(tmp_path: Path) -> None:
@@ -112,7 +118,7 @@ def test_prune_missing_removes_deleted_files(tmp_path: Path) -> None:
 
     wb = load_workbook(out)
     ws = wb[MAIN_SHEET_NAME]
-    locs = {ws.cell(r, 7).value for r in range(2, ws.max_row + 1)}
+    locs = {ws.cell(r, 8).value for r in range(2, ws.max_row + 1)}  # Location col 8
     assert "gone.docx" in locs
     assert "keep.pdf" in locs
 
@@ -122,7 +128,7 @@ def test_prune_missing_removes_deleted_files(tmp_path: Path) -> None:
 
     wb2 = load_workbook(out)
     ws2 = wb2[MAIN_SHEET_NAME]
-    locs2 = {ws2.cell(r, 7).value for r in range(2, ws2.max_row + 1)}
+    locs2 = {ws2.cell(r, 8).value for r in range(2, ws2.max_row + 1)}  # Location col 8
     assert "gone.docx" not in locs2
     assert "keep.pdf" in locs2
 
@@ -140,7 +146,7 @@ def test_treasureignore_prunes_ignored_files(tmp_path: Path) -> None:
 
     wb = load_workbook(out)
     ws = wb[MAIN_SHEET_NAME]
-    locs = {ws.cell(r, 7).value for r in range(2, ws.max_row + 1)}
+    locs = {ws.cell(r, 8).value for r in range(2, ws.max_row + 1)}  # Location col 8
     assert "keep.pdf" in locs
     assert "ignore.pdf" in locs
 
@@ -152,6 +158,6 @@ def test_treasureignore_prunes_ignored_files(tmp_path: Path) -> None:
 
     wb2 = load_workbook(out)
     ws2 = wb2[MAIN_SHEET_NAME]
-    locs2 = {ws2.cell(r, 7).value for r in range(2, ws2.max_row + 1)}
+    locs2 = {ws2.cell(r, 8).value for r in range(2, ws2.max_row + 1)}  # Location col 8
     assert "keep.pdf" in locs2
     assert "ignore.pdf" not in locs2

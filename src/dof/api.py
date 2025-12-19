@@ -116,6 +116,7 @@ REQUIRED_COLUMNS = [
     "File Type",
     "Description",
     "Date Found",
+    "Last Seen",
     "Link",
     "Version",
     "Location",
@@ -558,7 +559,7 @@ def create_or_update_treasure_map(
     prune_missing: bool = False,
 ) -> Path:
     """Scan root_dir and create/update the treasure map workbook.
-
+    any change -> increment Version only; Date Found remains first-seen; Last Seen updates when present
     If prune_missing is True, remove rows for files that no longer exist.
     """
     today = today or date.today()
@@ -586,9 +587,28 @@ def create_or_update_treasure_map(
         prev_sha = meta.get(loc)
 
         if loc in existing_rows:
-            # identical (including both None) -> no change
+            row = updated_rows[loc]
+
+            # Always update Last Seen for files that still exist in the scan
+            row["Last Seen"] = today
+
+            # identical (including both None) -> no change (except Last Seen)
             if prev_sha == f.sha256:
                 continue
+
+            # changed (provable) -> bump Version only (Date Found is first-seen)
+            if _hash_changed(prev_sha, f.sha256):
+                row["Version"] = _bump_version(row.get("Version"))
+                meta[loc] = f.sha256
+                continue
+
+            # Previously unreadable/unhashed but now readable -> record hash, no bump
+            if prev_sha is None and f.sha256 is not None:
+                meta[loc] = f.sha256
+                continue
+
+            # Hashed before but unreadable now -> no change
+            continue
 
             # changed (provable) -> bump Version only (Date Found is first-seen date)
             if _hash_changed(prev_sha, f.sha256):
@@ -612,10 +632,12 @@ def create_or_update_treasure_map(
             "File Type": f.file_type,
             "Description": "",
             "Date Found": today,
+            "Last Seen": today,  # NEW
             "Link": {"target": link_target, "text": f.filename},
             "Version": "1.0",
             "Location": loc,
         }
+
         meta[loc] = f.sha256
 
     # If a .treasureignore exists, treat ignored files as out-of-scope and remove them.
@@ -657,10 +679,10 @@ def create_or_update_treasure_map(
             else:
                 c.value = row.get(col_name, "")
 
-        # formatting for Date Found
-        date_cell = ws.cell(row=row_idx, column=mapping["Date Found"])
-        if isinstance(date_cell.value, date):
-            date_cell.number_format = "yyyy-mm-dd"
+        for col_name in ("Date Found", "Last Seen"):
+            dcell = ws.cell(row=row_idx, column=mapping[col_name])
+            if isinstance(dcell.value, date):
+                dcell.number_format = "dd/mm/yyyy"
 
     _autosize_columns(ws, mapping)
     _write_meta(meta_ws, meta)
