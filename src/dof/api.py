@@ -15,10 +15,11 @@ import hashlib
 import logging
 import os
 import sys
+import tempfile
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path, PurePosixPath, tempfile
+from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
