@@ -277,21 +277,30 @@ NL := $(shell printf "\n")
 release-patch: fetch-tags check-clean
 	@NEW="v$(MAJOR).$(MINOR).$$(($(PATCH) + 1))"; \
 	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
-	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	TMP="$$(mktemp -t dof-tagmsg.XXXXXX)"; \
+	printf 'release: %s\n\n%s\n' "$$NEW" "$(CHANGELOG)" > "$$TMP"; \
+	git tag -a "$$NEW" -F "$$TMP"; \
+	rm -f "$$TMP"; \
 	git push origin "$$NEW"; \
 	echo "Tagged $$NEW"
 
 release-minor: fetch-tags check-clean
 	@NEW="v$(MAJOR).$$(($(MINOR) + 1)).0"; \
 	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
-	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	TMP="$$(mktemp -t dof-tagmsg.XXXXXX)"; \
+	printf 'release: %s\n\n%s\n' "$$NEW" "$(CHANGELOG)" > "$$TMP"; \
+	git tag -a "$$NEW" -F "$$TMP"; \
+	rm -f "$$TMP"; \
 	git push origin "$$NEW"; \
 	echo "Tagged $$NEW"
 
 release-major: fetch-tags check-clean
 	@NEW="v$$(($(MAJOR) + 1)).0.0"; \
 	echo "Tagging $$NEW (from LAST_TAG=$(LAST_TAG))"; \
-	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	TMP="$$(mktemp -t dof-tagmsg.XXXXXX)"; \
+	printf 'release: %s\n\n%s\n' "$$NEW" "$(CHANGELOG)" > "$$TMP"; \
+	git tag -a "$$NEW" -F "$$TMP"; \
+	rm -f "$$TMP"; \
 	git push origin "$$NEW"; \
 	echo "Tagged $$NEW"
 
