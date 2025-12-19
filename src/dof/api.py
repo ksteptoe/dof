@@ -17,7 +17,7 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
@@ -26,7 +26,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import __version__
+from dof import __version__
 
 _logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ class FoundFile:
     filename: str
     suffix: str
     file_type: str
-    sha256: str
+    sha256: Optional[str]
 
 
 def setup_logging(loglevel: Optional[int]) -> None:
@@ -155,34 +155,130 @@ def _infer_file_type(suffix: str) -> str:
     return s.lstrip(".").upper() if s else "UNKNOWN"
 
 
-def _hash_changed(old: Optional[str], new: Optional[str]) -> bool:
-    # Can't read it now => don't claim it's changed.
-    if new is None:
-        return False
-
-    # Couldn't read it before, but can now => treat as "no change"
-    # (we just improved metadata; we don't know if content changed earlier)
-    if old is None:
-        return False
-
-    # Both are real hashes -> a true content change is detectable.
-    return old != new
-
-
-def _sha256_file(path: Path) -> str:
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
             h.update(chunk)
     return h.hexdigest()
 
 
 def _safe_sha256_file(path: Path) -> Optional[str]:
+    """Best-effort SHA-256.
+
+    OneDrive/Excel can temporarily lock files or expose cloud placeholders that
+    raise PermissionError/OSError. In those cases we return None so the scan
+    can continue without incorrectly bumping versions.
+    """
     try:
         return _sha256_file(path)
     except (PermissionError, OSError):
-        # OneDrive/Excel locks, cloud placeholders, transient IO, etc.
         return None
+
+
+def _hash_changed(old: Optional[str], new: Optional[str]) -> bool:
+    """Return True only when we can *prove* a content change.
+
+    - If we can't read/hash the file now (new is None), we do not claim change.
+    - If we couldn't hash it previously (old is None) but can now, treat as no change
+      (metadata improvement only).
+    """
+    if new is None:
+        return False
+    if old is None:
+        return False
+    return old != new
+
+
+@dataclass(frozen=True)
+class IgnoreRule:
+    pattern: str
+    negated: bool = False
+    dir_only: bool = False
+
+
+def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
+    """Load .treasureignore from root_dir (gitignore-ish patterns).
+
+    This is a pragmatic subset:
+    - blank lines and lines starting with # are ignored
+    - negation with leading ! is supported (last match wins)
+    - patterns with no / match anywhere (we also try **/pattern)
+    - patterns ending with / ignore that directory and everything under it
+    - ** is supported via PurePosixPath.match
+    """
+    ignore_path = root_dir / ".treasureignore"
+    if not ignore_path.exists() or not ignore_path.is_file():
+        return None
+
+    rules: List[IgnoreRule] = []
+    try:
+        for raw in ignore_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                continue
+
+            neg = line.startswith("!")
+            if neg:
+                line = line[1:].strip()
+                if not line:
+                    continue
+
+            # root-anchored patterns are already relative to root
+            if line.startswith("/"):
+                line = line[1:]
+
+            dir_only = line.endswith("/")
+            if dir_only:
+                line = line[:-1].strip()
+                if not line:
+                    continue
+
+            rules.append(IgnoreRule(pattern=line, negated=neg, dir_only=dir_only))
+    except OSError:
+        return None
+
+    return rules or None
+
+
+def _rule_matches(rel_posix: str, rule: IgnoreRule) -> bool:
+    p = PurePosixPath(rel_posix)
+
+    if rule.dir_only:
+        # match any path under that directory; treat pattern as a path fragment
+        # e.g. "tmp/" matches "tmp/a.pdf" and "a/tmp/b.pdf" when pattern has no "/".
+        pat = rule.pattern
+        if "/" in pat:
+            return p.match(pat + "/**") or p.match(pat)
+        # directory name anywhere in the path
+        for i in range(1, len(p.parts) + 1):
+            prefix = PurePosixPath(*p.parts[:i])
+            if prefix.match(pat):
+                # ensure it's actually a directory boundary: prefix shorter than full path
+                return True
+        return False
+
+    pat = rule.pattern
+    if "/" in pat:
+        return p.match(pat)
+
+    # basename-style patterns should match anywhere
+    return p.match(pat) or p.match("**/" + pat)
+
+
+def _is_ignored(rel_posix: str, rules: Optional[List[IgnoreRule]]) -> bool:
+    if not rules:
+        return False
+    ignored = False
+    for r in rules:
+        if _rule_matches(rel_posix, r):
+            ignored = not r.negated
+    return ignored
 
 
 def _build_sharepoint_url(base: Optional[str], rel_location_posix: str, abs_path: Path) -> str:
@@ -202,15 +298,30 @@ def _build_sharepoint_url(base: Optional[str], rel_location_posix: str, abs_path
 
 
 def discover_documents(root_dir: Path, suffixes: Optional[Iterable[str]] = None) -> List[FoundFile]:
-    root_dir = root_dir.resolve()
+    """Recursively scan root_dir for document files.
+
+    Respects an optional .treasureignore in root_dir, using gitignore-style patterns.
+    """
     suffixes_set = set(s.lower() for s in (suffixes or DEFAULT_DOCUMENT_SUFFIXES))
+    ignore_rules = _load_treasureignore(root_dir)
 
     found: List[FoundFile] = []
     for p in root_dir.rglob("*"):
-        if not _is_document(p, suffixes_set):
+        if not p.is_file():
             continue
-        rel = _posix_relpath(p, root_dir)
+
+        # Always ignore the ignore file itself
+        if p.name == ".treasureignore":
+            continue
+
         suffix = p.suffix.lower()
+        if suffix not in suffixes_set:
+            continue
+
+        rel = _posix_relpath(p, root_dir)
+        if _is_ignored(rel, ignore_rules):
+            continue
+
         found.append(
             FoundFile(
                 abs_path=p,
@@ -329,18 +440,18 @@ def _meta_headers(meta_ws: Worksheet) -> Dict[str, int]:
     return mapping
 
 
-def _read_meta(meta_ws: Worksheet) -> Dict[str, str]:
+def _read_meta(meta_ws: Worksheet) -> Dict[str, Optional[str]]:
     mapping = _meta_headers(meta_ws)
-    out: Dict[str, str] = {}
+    out: Dict[str, Optional[str]] = {}
     for r in range(2, meta_ws.max_row + 1):
         loc = meta_ws.cell(r, mapping["Location"]).value
         sha = meta_ws.cell(r, mapping["Sha256"]).value
-        if loc and sha:
-            out[str(loc)] = str(sha)
+        if loc:
+            out[str(loc)] = str(sha) if sha is not None else None
     return out
 
 
-def _write_meta(meta_ws: Worksheet, meta: Dict[str, str]) -> None:
+def _write_meta(meta_ws: Worksheet, meta: Dict[str, Optional[str]]) -> None:
     mapping = _meta_headers(meta_ws)
     # clear old
     if meta_ws.max_row > 1:
@@ -415,11 +526,11 @@ def create_or_update_treasure_map(
         prev_sha = meta.get(loc)
 
         if loc in existing_rows:
-            # 1) Identical (including both None) -> no change
+            # identical (including both None) -> no change
             if prev_sha == f.sha256:
                 continue
 
-            # 2) Real, provable content change -> bump date+version only
+            # changed (provable) -> update Date Found + bump Version only
             if _hash_changed(prev_sha, f.sha256):
                 row = updated_rows[loc]
                 row["Date Found"] = today
@@ -427,12 +538,12 @@ def create_or_update_treasure_map(
                 meta[loc] = f.sha256
                 continue
 
-            # 3) Previously unhashed but now hashed -> record hash, no bump
+            # Previously unreadable/unhashed but now readable -> record hash, no bump
             if prev_sha is None and f.sha256 is not None:
                 meta[loc] = f.sha256
                 continue
 
-            # 4) Hashed before but unreadable now (new is None) -> no change
+            # Hashed before but unreadable now -> no change
             continue
 
         # New file -> create a new row
@@ -447,6 +558,15 @@ def create_or_update_treasure_map(
             "Location": loc,
         }
         meta[loc] = f.sha256
+
+    # If a .treasureignore exists, treat ignored files as out-of-scope and remove them.
+    ignore_rules_map = _load_treasureignore(root_dir)
+    if ignore_rules_map:
+        for loc in list(updated_rows.keys()):
+            if _is_ignored(str(loc).replace("\\", "/"), ignore_rules_map):
+                updated_rows.pop(loc, None)
+                meta.pop(loc, None)
+
     if prune_missing:
         # Remove rows for files that no longer exist in the scanned tree.
         found_locs = {f.rel_location for f in found}

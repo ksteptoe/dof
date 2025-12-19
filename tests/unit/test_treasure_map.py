@@ -125,3 +125,33 @@ def test_prune_missing_removes_deleted_files(tmp_path: Path) -> None:
     locs2 = {ws2.cell(r, 7).value for r in range(2, ws2.max_row + 1)}
     assert "gone.docx" not in locs2
     assert "keep.pdf" in locs2
+
+
+def test_treasureignore_prunes_ignored_files(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+
+    # Create a document and generate the map
+    _write(root / "keep.pdf", b"keep")
+    _write(root / "ignore.pdf", b"ignore")
+
+    out = tmp_path / "treasure_map.xlsx"
+    create_or_update_treasure_map(root_dir=root, output_xlsx=out, today=date(2025, 12, 18))
+
+    wb = load_workbook(out)
+    ws = wb[MAIN_SHEET_NAME]
+    locs = {ws.cell(r, 7).value for r in range(2, ws.max_row + 1)}
+    assert "keep.pdf" in locs
+    assert "ignore.pdf" in locs
+
+    # Introduce ignore rule and re-run WITHOUT prune_missing.
+    # Ignored files should be removed from the map.
+    (root / ".treasureignore").write_text("ignore.pdf\n", encoding="utf-8")
+
+    create_or_update_treasure_map(root_dir=root, output_xlsx=out, today=date(2025, 12, 19), prune_missing=False)
+
+    wb2 = load_workbook(out)
+    ws2 = wb2[MAIN_SHEET_NAME]
+    locs2 = {ws2.cell(r, 7).value for r in range(2, ws2.max_row + 1)}
+    assert "keep.pdf" in locs2
+    assert "ignore.pdf" not in locs2

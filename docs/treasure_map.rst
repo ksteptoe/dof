@@ -17,7 +17,7 @@ Quickstart
 
 
 # remove rows for files that no longer exist
-dof -d /path/to/root --prune-missing
+dof -d /path/to/root --prune-missinging
 
 
    # choose output filename
@@ -41,3 +41,26 @@ If the output workbook already exists:
 * **Identical file content**: no changes
 * **Any change to file content**: updates **Date Found** and increments **Version**
   (e.g. ``1.0`` → ``1.1``), with all other columns preserved
+
+
+Ignoring files with .treasureignore
+----------------------------------
+
+If a file named ``.treasureignore`` exists in the scan root directory, DOF will treat it like a
+gitignore-style ignore file and will:
+
+- skip matching files during discovery
+- remove matching rows from an existing treasure map on the next run (even if the file still exists)
+
+Example ``.treasureignore``::
+
+  # ignore everything in tmp/
+  tmp/
+
+  # ignore Excel macro sheets
+  *.xlsm
+
+  # ignore a specific file
+  secret.pdf
+
+Patterns use gitignore-style "wildmatch" semantics (including ``**`` and negation with ``!``).
