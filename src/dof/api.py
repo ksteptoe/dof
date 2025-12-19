@@ -6,7 +6,7 @@ Key behaviour:
   File Name, File Type, Description, Date Found, Link, Version, Location
 - If the workbook already exists:
   - identical file -> no change
-  - any change -> update Date Found and increment Version only
+  - any change -> increment Version only (Date Found remains first-seen)
 """
 
 from __future__ import annotations
@@ -590,10 +590,9 @@ def create_or_update_treasure_map(
             if prev_sha == f.sha256:
                 continue
 
-            # changed (provable) -> update Date Found + bump Version only
+            # changed (provable) -> bump Version only (Date Found is first-seen date)
             if _hash_changed(prev_sha, f.sha256):
                 row = updated_rows[loc]
-                row["Date Found"] = today
                 row["Version"] = _bump_version(row.get("Version"))
                 meta[loc] = f.sha256
                 continue
