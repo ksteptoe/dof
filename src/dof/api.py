@@ -1,10 +1,12 @@
 """DOF API: build and maintain an Excel "treasure map" of documents in a directory tree.
 
 Key behaviour:
+
 - Recursively scan a directory for common document types.
-- Write/update an Excel workbook (default: treasure_map.xlsx) with:
+- Write/update an Excel workbook (default: ``treasure_map.xlsx``) with columns:
   File Name, File Type, Description, Date Found, Last Seen, Link, Version, Location
-- If the workbook already exists:
+- If the workbook already exists, apply update rules:
+
   - identical file -> update Last Seen only
   - content changed -> increment Version, update Last Seen (Date Found remains first-seen)
   - file deleted -> keep row (unless --prune-missing), Last Seen frozen at last scan
