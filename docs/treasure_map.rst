@@ -25,8 +25,8 @@ Quickstart
    dof --format json
    dof --format csv
 
-   # Remove rows for deleted files
-   dof --prune-missing
+   # Keep rows for deleted files (default: remove them)
+   dof --keep-missing
 
 
 Output Columns
@@ -96,12 +96,12 @@ When the output workbook already exists, dof applies these rules:
   - New row added with ``Version`` = ``1.0``
   - ``Date Found`` and ``Last Seen`` set to today's date
 
-**Deleted files** (without ``--prune-missing``):
+**Deleted files** (default behavior):
+  - Row is removed from the map
+
+**Deleted files** (with ``--keep-missing``):
   - Row remains in the map
   - ``Last Seen`` frozen at last scan date when file existed
-
-**Deleted files** (with ``--prune-missing``):
-  - Row is removed from the map
 
 
 Ignoring Files

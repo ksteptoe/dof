@@ -44,16 +44,17 @@ Options
 
    - New files that would be added
    - Updated files (content changed)
-   - Deleted files (if ``--prune-missing`` is set)
+   - Deleted files that will be removed (default behavior)
    - Ignored files (matching ``.treasureignore`` patterns)
 
-.. option:: --prune-missing
+.. option:: --keep-missing
 
-   Remove rows from the treasure map for files that no longer exist
+   Keep rows in the treasure map for files that no longer exist
    under the scanned root.
 
-   Without this flag, deleted files remain in the map with their
-   ``Last Seen`` date frozen at the last scan when they existed.
+   By default, deleted files are removed from the map. Use this flag
+   to preserve their rows with the ``Last Seen`` date frozen at the
+   last scan when they existed.
 
 .. option:: --sharepoint-base URL
 
@@ -131,11 +132,11 @@ Examples
    dof --format json -o inventory.xlsx
    # Creates: inventory.json
 
-**Clean up deleted files:**
+**Preserve deleted files:**
 
 .. code-block:: bash
 
-   dof --prune-missing
+   dof --keep-missing
 
 **SharePoint integration:**
 

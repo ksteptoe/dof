@@ -72,10 +72,10 @@ class ProgressCounter:
     help="Base SharePoint/OneDrive URL to use for hyperlinks.",
 )
 @click.option(
-    "--prune-missing",
+    "--keep-missing",
     is_flag=True,
     default=False,
-    help="Remove rows for files that no longer exist under the scanned root.",
+    help="Keep rows for files that no longer exist (default: remove them).",
 )
 @click.option(
     "--dry-run",
@@ -101,7 +101,7 @@ def cli(
     root_dir: Path,
     output_xlsx: Path,
     sharepoint_base_url: Optional[str],
-    prune_missing: bool,
+    keep_missing: bool,
     dry_run: bool,
     output_format: str,
     progress: bool,
@@ -118,7 +118,7 @@ def cli(
         root_dir=root_dir,
         output_xlsx=output_xlsx,
         sharepoint_base_url=sharepoint_base_url,
-        prune_missing=prune_missing,
+        prune_missing=not keep_missing,
         dry_run=dry_run,
         output_format=fmt,
         progress_callback=progress_counter,

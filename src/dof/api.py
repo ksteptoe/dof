@@ -707,7 +707,7 @@ def create_or_update_treasure_map(
     sharepoint_base_url: Optional[str] = None,
     today: Optional[date] = None,
     suffixes: Optional[Iterable[str]] = None,
-    prune_missing: bool = False,
+    prune_missing: bool = True,
     dry_run: bool = False,
     output_format: OutputFormat = OutputFormat.XLSX,
     progress_callback: Optional[Callable[[str], None]] = None,
@@ -720,7 +720,7 @@ def create_or_update_treasure_map(
         sharepoint_base_url: Optional SharePoint base URL for hyperlinks.
         today: Override today's date (for testing).
         suffixes: File extensions to include.
-        prune_missing: If True, remove rows for files that no longer exist.
+        prune_missing: If True (default), remove rows for files that no longer exist.
         dry_run: If True, compute changes but don't write files. Returns ScanResult.
         output_format: Output format (XLSX, JSON, or CSV).
         progress_callback: Optional callback for progress reporting.
@@ -906,7 +906,7 @@ def dof_api(
     root_dir: Path,
     output_xlsx: Path,
     sharepoint_base_url: Optional[str] = None,
-    prune_missing: bool = False,
+    prune_missing: bool = True,
     dry_run: bool = False,
     output_format: OutputFormat = OutputFormat.XLSX,
     progress_callback: Optional[Callable[[str], None]] = None,

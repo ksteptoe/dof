@@ -31,8 +31,8 @@ dof --dry-run
 dof --format json
 dof --format csv
 
-# Remove rows for deleted files
-dof --prune-missing
+# Keep rows for deleted files (default: remove them)
+dof --keep-missing
 
 # Disable progress indicator
 dof --no-progress
@@ -50,7 +50,7 @@ dof -vv     # debug level
 | `-o, --output PATH` | Output filename (default: `treasure_map.xlsx`) |
 | `--format [xlsx\|json\|csv]` | Output format (default: `xlsx`) |
 | `--dry-run` | Show what would change without writing files |
-| `--prune-missing` | Remove rows for files that no longer exist |
+| `--keep-missing` | Keep rows for files that no longer exist (default: remove) |
 | `--sharepoint-base URL` | Base SharePoint/OneDrive URL for hyperlinks |
 | `--progress / --no-progress` | Show/hide progress during scan (default: show) |
 | `-v, --verbose` | Enable info-level logging |
