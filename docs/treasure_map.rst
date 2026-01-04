@@ -1,5 +1,5 @@
-Treasure map CLI
-================
+Treasure Map
+============
 
 The ``dof`` CLI scans a directory tree for common document types (PDF, Office, text/markdown, etc.)
 and maintains an Excel index file (default ``treasure_map.xlsx``).
@@ -9,58 +9,163 @@ Quickstart
 
 .. code-block:: bash
 
-   # current directory
+   # Scan current directory
    dof
 
-   # choose root
+   # Scan a specific directory
    dof -d /path/to/root
 
-
-# remove rows for files that no longer exist
-dof -d /path/to/root --prune-missinging
-
-
-   # choose output filename
+   # Choose output filename
    dof -d . -o my_treasure_map.xlsx
+
+   # Preview changes without writing (dry run)
+   dof --dry-run
+
+   # Output as JSON or CSV
+   dof --format json
+   dof --format csv
+
+   # Remove rows for deleted files
+   dof --prune-missing
+
+
+Output Columns
+--------------
+
+The treasure map contains the following columns:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Column
+     - Description
+   * - File Name
+     - Name of the document file
+   * - File Type
+     - Document type (PDF, Word, Excel, etc.)
+   * - Description
+     - User-editable notes (preserved across updates)
+   * - Date Found
+     - First time the file was discovered (immutable)
+   * - Last Seen
+     - Most recent scan where the file was present
+   * - Link
+     - Clickable hyperlink to the file
+   * - Version
+     - Starts at 1.0; increments when content changes
+   * - Location
+     - Path relative to the scan root (POSIX-style)
+
 
 Hyperlinks
 ----------
 
-If you set ``DOF_SHAREPOINT_BASE_URL`` (or pass ``--sharepoint-base``),
-new rows will have a hyperlink to:
+By default, hyperlinks use local ``file://`` URIs.
 
-``<BASE_URL>/<relative/path/to/file>``
+To generate SharePoint/OneDrive URLs instead, set the ``DOF_SHAREPOINT_BASE_URL``
+environment variable or use the ``--sharepoint-base`` option:
 
-The hyperlink display text is the filename.
+.. code-block:: bash
 
-Update rules
-------------
+   export DOF_SHAREPOINT_BASE_URL="https://example.sharepoint.com/sites/Team/Shared%20Documents"
+   dof
 
-If the output workbook already exists:
+   # Or pass directly
+   dof --sharepoint-base "https://example.sharepoint.com/sites/Team/Shared%20Documents"
 
-* **Identical file content**: no changes
-* **Any change to file content**: updates **Date Found** and increments **Version**
-  (e.g. ``1.0`` → ``1.1``), with all other columns preserved
+The hyperlink target becomes: ``<BASE_URL>/<relative/path/to/file>``
 
 
-Ignoring files with .treasureignore
-----------------------------------
+Update Behavior
+---------------
 
-If a file named ``.treasureignore`` exists in the scan root directory, DOF will treat it like a
-gitignore-style ignore file and will:
+When the output workbook already exists, dof applies these rules:
 
-- skip matching files during discovery
-- remove matching rows from an existing treasure map on the next run (even if the file still exists)
+**Unchanged files** (same content hash):
+  - ``Last Seen`` is updated to today's date
+  - All other columns preserved (including user-edited ``Description``)
 
-Example ``.treasureignore``::
+**Changed files** (content hash differs):
+  - ``Version`` is incremented (e.g., ``1.0`` → ``1.1``)
+  - ``Last Seen`` is updated to today's date
+  - ``Date Found`` remains unchanged (first-seen date is immutable)
+  - ``Description`` is preserved
 
-  # ignore everything in tmp/
-  tmp/
+**New files**:
+  - New row added with ``Version`` = ``1.0``
+  - ``Date Found`` and ``Last Seen`` set to today's date
 
-  # ignore Excel macro sheets
-  *.xlsm
+**Deleted files** (without ``--prune-missing``):
+  - Row remains in the map
+  - ``Last Seen`` frozen at last scan date when file existed
 
-  # ignore a specific file
-  secret.pdf
+**Deleted files** (with ``--prune-missing``):
+  - Row is removed from the map
 
-Patterns use gitignore-style "wildmatch" semantics (including ``**`` and negation with ``!``).
+
+Ignoring Files
+--------------
+
+Create a ``.treasureignore`` file in the scan root to exclude files using
+gitignore-style patterns:
+
+.. code-block:: text
+
+   # Ignore everything in tmp/
+   tmp/
+
+   # Ignore Excel macro sheets
+   *.xlsm
+
+   # Ignore a specific file
+   secret.pdf
+
+   # Negation: keep this one even though *.xlsm is ignored
+   !important.xlsm
+
+**Pattern types:**
+
+- ``pattern`` - Matches anywhere in the tree
+- ``/pattern`` - Matches only at the root level
+- ``dir/`` - Ignores entire directory tree
+- ``*.ext`` - Wildcard matching
+- ``**/pattern/**`` - Matches across directory boundaries
+- ``!pattern`` - Negation (last match wins)
+
+Files matching ignore patterns are:
+
+1. Excluded from new scans
+2. Removed from existing treasure maps (even if the file still exists)
+
+
+Supported File Types
+--------------------
+
+dof recognizes these document extensions:
+
+**Office documents:**
+  ``.doc``, ``.docx``, ``.dot``, ``.dotx``, ``.rtf``,
+  ``.xls``, ``.xlsx``, ``.xlsm``, ``.xlsb``, ``.xlt``, ``.xltx``, ``.xltm``,
+  ``.ppt``, ``.pptx``, ``.pptm``, ``.pot``, ``.potx``
+
+**Text files:**
+  ``.txt``, ``.text``, ``.md``, ``.rst``, ``.csv``, ``.tsv``
+
+**Data/config:**
+  ``.yaml``, ``.yml``, ``.json``, ``.xml``, ``.toml``, ``.ini``
+
+**PDF:**
+  ``.pdf``
+
+**OpenDocument:**
+  ``.odt``, ``.ods``, ``.odp``
+
+**Apple iWork:**
+  ``.pages``, ``.numbers``, ``.key``
+
+**eBooks:**
+  ``.epub``, ``.mobi``
+
+**Other:**
+  ``.tex``
