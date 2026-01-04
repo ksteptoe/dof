@@ -68,7 +68,7 @@ class ProgressCounter:
     "sharepoint_base_url",
     default=None,
     envvar="DOF_SHAREPOINT_BASE_URL",
-    show_default="(none)",
+    show_default="none",
     help="Base SharePoint/OneDrive URL to use for hyperlinks.",
 )
 @click.option(
