@@ -3,24 +3,29 @@
 Key behaviour:
 - Recursively scan a directory for common document types.
 - Write/update an Excel workbook (default: treasure_map.xlsx) with:
-  File Name, File Type, Description, Date Found, Link, Version, Location
+  File Name, File Type, Description, Date Found, Last Seen, Link, Version, Location
 - If the workbook already exists:
-  - identical file -> no change
-  - any change -> increment Version only (Date Found remains first-seen)
+  - identical file -> update Last Seen only
+  - content changed -> increment Version, update Last Seen (Date Found remains first-seen)
+  - file deleted -> keep row (unless --prune-missing), Last Seen frozen at last scan
+  - file ignored via .treasureignore -> remove from map
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import json
 import logging
 import os
 import sys
 import tempfile
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
@@ -85,29 +90,53 @@ DEFAULT_DOCUMENT_SUFFIXES = {
 
 
 FILE_TYPE_BY_SUFFIX = {
+    # PDF
     ".pdf": "PDF",
+    # Text
     ".txt": "Text",
     ".text": "Text",
     ".md": "Markdown",
     ".rst": "reStructuredText",
     ".csv": "CSV",
     ".tsv": "TSV",
+    ".rtf": "Rich Text",
+    # Microsoft Office
     ".doc": "Word",
     ".docx": "Word",
-    ".rtf": "Rich Text",
+    ".dot": "Word Template",
+    ".dotx": "Word Template",
     ".xls": "Excel",
     ".xlsx": "Excel",
     ".xlsm": "Excel",
     ".xlsb": "Excel",
+    ".xlt": "Excel Template",
+    ".xltx": "Excel Template",
+    ".xltm": "Excel Template",
     ".ppt": "PowerPoint",
     ".pptx": "PowerPoint",
     ".pptm": "PowerPoint",
+    ".pot": "PowerPoint Template",
+    ".potx": "PowerPoint Template",
+    # OpenDocument
+    ".odt": "OpenDocument Text",
+    ".ods": "OpenDocument Spreadsheet",
+    ".odp": "OpenDocument Presentation",
+    # Apple iWork
+    ".pages": "Pages",
+    ".numbers": "Numbers",
+    ".key": "Keynote",
+    # eBooks
+    ".epub": "EPUB",
+    ".mobi": "Kindle",
+    # Data/Config
     ".yaml": "YAML",
     ".yml": "YAML",
     ".json": "JSON",
     ".xml": "XML",
     ".toml": "TOML",
     ".ini": "INI",
+    # Other
+    ".tex": "LaTeX",
 }
 
 
@@ -121,6 +150,57 @@ REQUIRED_COLUMNS = [
     "Version",
     "Location",
 ]
+
+
+class OutputFormat(Enum):
+    XLSX = "xlsx"
+    JSON = "json"
+    CSV = "csv"
+
+
+class ChangeType(Enum):
+    NEW = "new"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+    DELETED = "deleted"
+    IGNORED = "ignored"
+
+
+@dataclass
+class FileChange:
+    """Tracks a change to a single file for dry-run reporting."""
+
+    location: str
+    change_type: ChangeType
+    old_version: Optional[str] = None
+    new_version: Optional[str] = None
+
+
+@dataclass
+class ScanResult:
+    """Result of a treasure map scan, used for dry-run and reporting."""
+
+    total_found: int = 0
+    new_files: List[str] = field(default_factory=list)
+    updated_files: List[str] = field(default_factory=list)
+    unchanged_files: List[str] = field(default_factory=list)
+    deleted_files: List[str] = field(default_factory=list)
+    ignored_files: List[str] = field(default_factory=list)
+    changes: List[FileChange] = field(default_factory=list)
+
+    def summary(self) -> str:
+        """Return a human-readable summary of changes."""
+        lines = [
+            f"Total documents found: {self.total_found}",
+            f"  New:       {len(self.new_files)}",
+            f"  Updated:   {len(self.updated_files)}",
+            f"  Unchanged: {len(self.unchanged_files)}",
+        ]
+        if self.deleted_files:
+            lines.append(f"  Deleted:   {len(self.deleted_files)}")
+        if self.ignored_files:
+            lines.append(f"  Ignored:   {len(self.ignored_files)}")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -233,6 +313,7 @@ class IgnoreRule:
     pattern: str
     negated: bool = False
     dir_only: bool = False
+    root_anchored: bool = False
 
 
 def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
@@ -242,6 +323,7 @@ def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
     - blank lines and lines starting with # are ignored
     - negation with leading ! is supported (last match wins)
     - patterns with no / match anywhere (we also try **/pattern)
+    - patterns starting with / match only at root level
     - patterns ending with / ignore that directory and everything under it
     - ** is supported via PurePosixPath.match
     """
@@ -264,8 +346,9 @@ def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
                 if not line:
                     continue
 
-            # root-anchored patterns are already relative to root
-            if line.startswith("/"):
+            # root-anchored patterns start with /
+            root_anchored = line.startswith("/")
+            if root_anchored:
                 line = line[1:]
 
             dir_only = line.endswith("/")
@@ -274,7 +357,7 @@ def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
                 if not line:
                     continue
 
-            rules.append(IgnoreRule(pattern=line, negated=neg, dir_only=dir_only))
+            rules.append(IgnoreRule(pattern=line, negated=neg, dir_only=dir_only, root_anchored=root_anchored))
     except OSError:
         return None
 
@@ -283,11 +366,19 @@ def _load_treasureignore(root_dir: Path) -> Optional[List[IgnoreRule]]:
 
 def _rule_matches(rel_posix: str, rule: IgnoreRule) -> bool:
     p = PurePosixPath(rel_posix)
+    pat = rule.pattern
+
+    # Root-anchored patterns only match at the root level (no parent directories)
+    if rule.root_anchored:
+        if rule.dir_only:
+            # Root-anchored directory pattern: must match at root and be a directory
+            return p.match(pat + "/**") or p.match(pat)
+        # Root-anchored file/pattern: must match at root level (no / in rel_posix)
+        return "/" not in rel_posix and p.match(pat)
 
     if rule.dir_only:
         # match any path under that directory; treat pattern as a path fragment
         # e.g. "tmp/" matches "tmp/a.pdf" and "a/tmp/b.pdf" when pattern has no "/".
-        pat = rule.pattern
         if "/" in pat:
             return p.match(pat + "/**") or p.match(pat)
         # directory name anywhere in the path
@@ -298,7 +389,6 @@ def _rule_matches(rel_posix: str, rule: IgnoreRule) -> bool:
                 return True
         return False
 
-    pat = rule.pattern
     if "/" in pat:
         return p.match(pat)
 
@@ -332,41 +422,55 @@ def _build_sharepoint_url(base: Optional[str], rel_location_posix: str, abs_path
     return abs_path.resolve().as_uri()
 
 
-def discover_documents(root_dir: Path, suffixes: Optional[Iterable[str]] = None) -> List[FoundFile]:
+def discover_documents(
+    root_dir: Path,
+    suffixes: Optional[Iterable[str]] = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> List[FoundFile]:
     """Recursively scan root_dir for document files.
 
     Respects an optional .treasureignore in root_dir, using gitignore-style patterns.
+    Uses Path.walk() for efficient directory traversal (Python 3.12+).
+
+    Args:
+        root_dir: Directory to scan.
+        suffixes: File extensions to include (defaults to DEFAULT_DOCUMENT_SUFFIXES).
+        progress_callback: Optional callback called with each file path being processed.
     """
     suffixes_set = set(s.lower() for s in (suffixes or DEFAULT_DOCUMENT_SUFFIXES))
     ignore_rules = _load_treasureignore(root_dir)
 
     found: List[FoundFile] = []
-    for p in root_dir.rglob("*"):
-        if not p.is_file():
-            continue
 
-        # Always ignore the ignore file itself
-        if p.name == ".treasureignore":
-            continue
+    # Use Path.walk() (Python 3.12+) for more efficient traversal
+    for dirpath, _dirnames, filenames in root_dir.walk():
+        for filename in filenames:
+            # Always ignore the ignore file itself
+            if filename == ".treasureignore":
+                continue
 
-        suffix = p.suffix.lower()
-        if suffix not in suffixes_set:
-            continue
+            p = dirpath / filename
+            suffix = p.suffix.lower()
+            if suffix not in suffixes_set:
+                continue
 
-        rel = _posix_relpath(p, root_dir)
-        if _is_ignored(rel, ignore_rules):
-            continue
+            rel = _posix_relpath(p, root_dir)
+            if _is_ignored(rel, ignore_rules):
+                continue
 
-        found.append(
-            FoundFile(
-                abs_path=p,
-                rel_location=rel,
-                filename=p.name,
-                suffix=suffix,
-                file_type=_infer_file_type(suffix),
-                sha256=_safe_sha256_file(p),
+            if progress_callback:
+                progress_callback(rel)
+
+            found.append(
+                FoundFile(
+                    abs_path=p,
+                    rel_location=rel,
+                    filename=filename,
+                    suffix=suffix,
+                    file_type=_infer_file_type(suffix),
+                    sha256=_safe_sha256_file(p),
+                )
             )
-        )
 
     # deterministic order helps tests and diffing
     found.sort(key=lambda x: x.rel_location.lower())
@@ -533,7 +637,7 @@ def _parse_version(v: object) -> Tuple[int, int]:
         major = int(m[0])
         minor = int(m[1]) if len(m) > 1 else 0
         return major, minor
-    except Exception:
+    except (ValueError, IndexError):
         return 1, 0
 
 
@@ -549,6 +653,51 @@ def _set_link_cell(cell: Cell, target: str, text: str) -> None:
     cell.style = "Hyperlink"
 
 
+def _row_to_dict(row: Dict[str, object]) -> Dict[str, object]:
+    """Convert internal row representation to a clean dict for JSON/CSV export."""
+    result = {}
+    for col in REQUIRED_COLUMNS:
+        val = row.get(col)
+        if col == "Link":
+            # Extract URL from link dict
+            if isinstance(val, dict):
+                result[col] = val.get("target", "")
+            else:
+                result[col] = str(val) if val else ""
+        elif isinstance(val, date):
+            result[col] = val.isoformat()
+        else:
+            result[col] = val if val is not None else ""
+    return result
+
+
+def _write_json(output_path: Path, rows: Dict[str, Dict[str, object]]) -> Path:
+    """Write treasure map data to JSON file."""
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {"treasure_map": [_row_to_dict(rows[loc]) for loc in sorted(rows.keys(), key=lambda s: s.lower())]}
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    return output_path
+
+
+def _write_csv(output_path: Path, rows: Dict[str, Dict[str, object]]) -> Path:
+    """Write treasure map data to CSV file."""
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=REQUIRED_COLUMNS)
+        writer.writeheader()
+        for loc in sorted(rows.keys(), key=lambda s: s.lower()):
+            writer.writerow(_row_to_dict(rows[loc]))
+
+    return output_path
+
+
 def create_or_update_treasure_map(
     *,
     root_dir: Path,
@@ -557,10 +706,25 @@ def create_or_update_treasure_map(
     today: Optional[date] = None,
     suffixes: Optional[Iterable[str]] = None,
     prune_missing: bool = False,
-) -> Path:
-    """Scan root_dir and create/update the treasure map workbook.
-    any change -> increment Version only; Date Found remains first-seen; Last Seen updates when present
-    If prune_missing is True, remove rows for files that no longer exist.
+    dry_run: bool = False,
+    output_format: OutputFormat = OutputFormat.XLSX,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> Path | ScanResult:
+    """Scan root_dir and create/update the treasure map.
+
+    Args:
+        root_dir: Directory to scan for documents.
+        output_xlsx: Output file path (extension ignored for JSON/CSV formats).
+        sharepoint_base_url: Optional SharePoint base URL for hyperlinks.
+        today: Override today's date (for testing).
+        suffixes: File extensions to include.
+        prune_missing: If True, remove rows for files that no longer exist.
+        dry_run: If True, compute changes but don't write files. Returns ScanResult.
+        output_format: Output format (XLSX, JSON, or CSV).
+        progress_callback: Optional callback for progress reporting.
+
+    Returns:
+        Path to written file, or ScanResult if dry_run=True.
     """
     today = today or date.today()
     root_dir = root_dir.resolve()
@@ -569,15 +733,26 @@ def create_or_update_treasure_map(
     _logger.info("DOF %s", __version__)
     _logger.info("Scanning %s", root_dir)
 
-    found = discover_documents(root_dir, suffixes=suffixes)
+    found = discover_documents(root_dir, suffixes=suffixes, progress_callback=progress_callback)
     _logger.info("Found %d document(s)", len(found))
 
-    wb, ws, meta_ws = _load_or_create_workbook(output_xlsx)
-    mapping = _ensure_required_headers(ws)
-    _style_header(ws, mapping)
+    # Track changes for dry-run reporting
+    scan_result = ScanResult(total_found=len(found))
 
-    existing_rows = _read_existing_rows(ws, mapping)
-    meta = _read_meta(meta_ws)
+    # For JSON/CSV with no existing file, we don't need to load a workbook
+    if output_format != OutputFormat.XLSX and not output_xlsx.exists():
+        existing_rows: Dict[str, Dict[str, object]] = {}
+        meta: Dict[str, Optional[str]] = {}
+        wb = None
+        ws = None
+        meta_ws = None
+        mapping = {col: i + 1 for i, col in enumerate(REQUIRED_COLUMNS)}
+    else:
+        wb, ws, meta_ws = _load_or_create_workbook(output_xlsx)
+        mapping = _ensure_required_headers(ws)
+        _style_header(ws, mapping)
+        existing_rows = _read_existing_rows(ws, mapping)
+        meta = _read_meta(meta_ws)
 
     # We'll build a new in-memory table of rows, preserving existing rows + appending new ones.
     updated_rows: Dict[str, Dict[str, object]] = dict(existing_rows)
@@ -588,41 +763,36 @@ def create_or_update_treasure_map(
 
         if loc in existing_rows:
             row = updated_rows[loc]
+            old_version = str(row.get("Version", "1.0"))
 
             # Always update Last Seen for files that still exist in the scan
             row["Last Seen"] = today
 
             # identical (including both None) -> no change (except Last Seen)
             if prev_sha == f.sha256:
+                scan_result.unchanged_files.append(loc)
+                scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
                 continue
 
             # changed (provable) -> bump Version only (Date Found is first-seen)
             if _hash_changed(prev_sha, f.sha256):
-                row["Version"] = _bump_version(row.get("Version"))
+                new_version = _bump_version(row.get("Version"))
+                row["Version"] = new_version
                 meta[loc] = f.sha256
+                scan_result.updated_files.append(loc)
+                scan_result.changes.append(FileChange(loc, ChangeType.UPDATED, old_version, new_version))
                 continue
 
             # Previously unreadable/unhashed but now readable -> record hash, no bump
             if prev_sha is None and f.sha256 is not None:
                 meta[loc] = f.sha256
+                scan_result.unchanged_files.append(loc)
+                scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
                 continue
 
             # Hashed before but unreadable now -> no change
-            continue
-
-            # changed (provable) -> bump Version only (Date Found is first-seen date)
-            if _hash_changed(prev_sha, f.sha256):
-                row = updated_rows[loc]
-                row["Version"] = _bump_version(row.get("Version"))
-                meta[loc] = f.sha256
-                continue
-
-            # Previously unreadable/unhashed but now readable -> record hash, no bump
-            if prev_sha is None and f.sha256 is not None:
-                meta[loc] = f.sha256
-                continue
-
-            # Hashed before but unreadable now -> no change
+            scan_result.unchanged_files.append(loc)
+            scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
             continue
 
         # New file -> create a new row
@@ -632,13 +802,14 @@ def create_or_update_treasure_map(
             "File Type": f.file_type,
             "Description": "",
             "Date Found": today,
-            "Last Seen": today,  # NEW
+            "Last Seen": today,
             "Link": {"target": link_target, "text": f.filename},
             "Version": "1.0",
             "Location": loc,
         }
-
         meta[loc] = f.sha256
+        scan_result.new_files.append(loc)
+        scan_result.changes.append(FileChange(loc, ChangeType.NEW, None, "1.0"))
 
     # If a .treasureignore exists, treat ignored files as out-of-scope and remove them.
     ignore_rules_map = _load_treasureignore(root_dir)
@@ -647,6 +818,8 @@ def create_or_update_treasure_map(
             if _is_ignored(str(loc).replace("\\", "/"), ignore_rules_map):
                 updated_rows.pop(loc, None)
                 meta.pop(loc, None)
+                scan_result.ignored_files.append(loc)
+                scan_result.changes.append(FileChange(loc, ChangeType.IGNORED))
 
     if prune_missing:
         # Remove rows for files that no longer exist in the scanned tree.
@@ -655,6 +828,32 @@ def create_or_update_treasure_map(
             if loc not in found_locs:
                 updated_rows.pop(loc, None)
                 meta.pop(loc, None)
+                scan_result.deleted_files.append(loc)
+                scan_result.changes.append(FileChange(loc, ChangeType.DELETED))
+
+    # If dry run, return the scan result without writing
+    if dry_run:
+        _logger.info("Dry run - no files written")
+        return scan_result
+
+    # Write output based on format
+    if output_format == OutputFormat.JSON:
+        output_path = output_xlsx.with_suffix(".json")
+        written = _write_json(output_path, updated_rows)
+        _logger.info("Wrote %s", written)
+        return written
+
+    if output_format == OutputFormat.CSV:
+        output_path = output_xlsx.with_suffix(".csv")
+        written = _write_csv(output_path, updated_rows)
+        _logger.info("Wrote %s", written)
+        return written
+
+    # XLSX format - need workbook
+    if wb is None:
+        wb, ws, meta_ws = _load_or_create_workbook(output_xlsx)
+        mapping = _ensure_required_headers(ws)
+        _style_header(ws, mapping)
 
     # Rewrite the main sheet (keeps it clean + deterministic)
     if ws.max_row > 1:
@@ -706,7 +905,10 @@ def dof_api(
     output_xlsx: Path,
     sharepoint_base_url: Optional[str] = None,
     prune_missing: bool = False,
-) -> Path:
+    dry_run: bool = False,
+    output_format: OutputFormat = OutputFormat.XLSX,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> Path | ScanResult:
     """CLI-friendly wrapper."""
     setup_logging(loglevel)
     return create_or_update_treasure_map(
@@ -714,4 +916,7 @@ def dof_api(
         output_xlsx=output_xlsx,
         sharepoint_base_url=sharepoint_base_url,
         prune_missing=prune_missing,
+        dry_run=dry_run,
+        output_format=output_format,
+        progress_callback=progress_callback,
     )

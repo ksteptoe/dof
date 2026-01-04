@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dof"
 dynamic = ["version"]
-description = "Project scaffolded with PyScaffold Clickstart."
+description = "CLI tool that scans directories for documents and maintains an Excel treasure map index."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "you@example.com" }]
+authors = [{ name = "Kevin Steptoe" }]
 
 # Runtime-only deps
 dependencies = [
