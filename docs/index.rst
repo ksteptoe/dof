@@ -11,6 +11,8 @@ Features
 - Excel output with clickable hyperlinks
 - JSON and CSV export formats
 - Content-based version tracking via SHA-256 hashing
+- Move and rename detection, so a restructured tree keeps its history
+- Offline broken-link detection with red highlighting and a non-zero exit code
 - Gitignore-style exclusion patterns (``.treasureignore``)
 - SharePoint/OneDrive URL integration
 - Dry-run mode for previewing changes
@@ -49,6 +51,7 @@ Contents
    :caption: Developer Guide
 
    api
+   api/modules
 
 .. toctree::
    :maxdepth: 1

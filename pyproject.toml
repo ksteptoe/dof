@@ -18,7 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Dev extras: tests, coverage, linting, releases
+# Docs extra: the single source of truth for the Sphinx toolchain.
+# docs/requirements.txt (consumed by Read the Docs and tox) installs this extra,
+# so the dependency set is declared here and nowhere else.
+docs = [
+    "sphinx>=7",
+]
+
+# Dev extras: tests, coverage, linting, docs, releases
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
@@ -28,6 +35,11 @@ dev = [
     "pre-commit>=3.7",
     "build>=1.2",
     "twine>=5",
+    # `make version` / `make release-show` run `python -m setuptools_scm` from the venv.
+    # It is a [build-system] requirement too, but build isolation does not put it on the
+    # venv path, so without this both targets fail with "No module named setuptools_scm".
+    "setuptools-scm[toml]>=8",
+    "dof[docs]",
 ]
 
 [project.urls]
@@ -47,6 +59,11 @@ write_to = "src/dof/_version.py"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# Ruff >= 0.16 also formats Python code blocks inside Markdown. Our Markdown is prose
+# and design notes (PLAN.md, README.md, CLAUDE.md) whose snippets are illustrative, not
+# shipped source, so `make lint` must not fail on them. CI lints `src tests` only and is
+# unaffected either way; this keeps the local gate consistent with it.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -54,10 +71,11 @@ select = ["E", "F", "I", "B"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --disable-warnings"
+addopts = "-ra --disable-warnings --strict-markers"
 testpaths = ["tests"]
 markers = [
-  "integration: filesystem/external-tool tests"
+  "integration: filesystem/external-tool tests",
+  "live: tests that hit real external infrastructure; excluded from the default gates"
 ]
 
 [tool.coverage.run]
@@ -65,6 +83,21 @@ branch = true
 source = ["dof"]
 omit = ["tests/*"]
 
+[tool.coverage.paths]
+source = ["src/", "*/site-packages/"]
+
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# THE coverage gate. Read from here by `make test-all`, CI and any health script.
+# Never duplicate this number in the Makefile, a workflow, or .coveragerc.
+fail_under = 85
+exclude_lines = [
+  "pragma: no cover",
+  "def __repr__",
+  "if self\\.debug",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if 0:",
+  "if __name__ == .__main__.:",
+]

@@ -1,5 +1,6 @@
-# Requirements file for ReadTheDocs, check .readthedocs.yml.
-# To build the module reference correctly, make sure every external package
-# under `install_requires` in `setup.cfg` is also listed here!
-sphinx>=3.2.1
-# sphinx_rtd_theme
+# Requirements file for Read the Docs (see .readthedocs.yaml) and `tox -e docs`.
+#
+# Do not list Sphinx packages here. The docs toolchain is declared once, in
+# pyproject.toml under [project.optional-dependencies] docs, and this file only
+# installs that extra so the two sources can never drift apart.
+.[docs]

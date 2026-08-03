@@ -13,7 +13,9 @@ from typing import Optional
 import click
 
 from dof import __version__
-from dof.api import OutputFormat, ScanResult, dof_api
+from dof.api import OutputFormat, ScanResult, WriteOutcome, dof_api
+
+BROKEN_LINKS_EXIT_CODE = 2
 
 __author__ = "Kevin Steptoe"
 __copyright__ = "Kevin Steptoe"
@@ -78,6 +80,18 @@ class ProgressCounter:
     help="Keep rows for files that no longer exist (default: remove them).",
 )
 @click.option(
+    "--no-detect-moves",
+    is_flag=True,
+    default=False,
+    help="Treat a moved or renamed file as a deletion plus a new document (default: track the move).",
+)
+@click.option(
+    "--no-fail-on-broken",
+    is_flag=True,
+    default=False,
+    help=f"Exit 0 even when broken links are found (default: exit {BROKEN_LINKS_EXIT_CODE}).",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -102,6 +116,8 @@ def cli(
     output_xlsx: Path,
     sharepoint_base_url: Optional[str],
     keep_missing: bool,
+    no_detect_moves: bool,
+    no_fail_on_broken: bool,
     dry_run: bool,
     output_format: str,
     progress: bool,
@@ -122,31 +138,49 @@ def cli(
         dry_run=dry_run,
         output_format=fmt,
         progress_callback=progress_counter,
+        detect_moves=not no_detect_moves,
+        with_result=True,
     )
 
     progress_counter.finish()
 
     if isinstance(result, ScanResult):
         # Dry run - print summary
-        click.echo("\n" + result.summary())
-        if result.new_files:
+        scan: ScanResult = result
+        click.echo("\n" + scan.summary())
+        if scan.new_files:
             click.echo("\nNew files:")
-            for f in result.new_files:
+            for f in scan.new_files:
                 click.echo(f"  + {f}")
-        if result.updated_files:
+        if scan.updated_files:
             click.echo("\nUpdated files:")
-            for f in result.updated_files:
+            for f in scan.updated_files:
                 click.echo(f"  ~ {f}")
-        if result.deleted_files:
-            click.echo("\nDeleted files:")
-            for f in result.deleted_files:
-                click.echo(f"  - {f}")
-        if result.ignored_files:
-            click.echo("\nIgnored files:")
-            for f in result.ignored_files:
-                click.echo(f"  x {f}")
-    else:
+    elif isinstance(result, WriteOutcome):
+        scan = result.scan
+        click.echo(f"Wrote: {result.path}")
+    else:  # pragma: no cover - defensive, dof_api always returns WriteOutcome here
         click.echo(f"Wrote: {result}")
+        return
+
+    if scan.moved_files:
+        click.echo("\nMoved files:")
+        for old_loc, new_loc in scan.moved_files:
+            click.echo(f"  > {old_loc} -> {new_loc}")
+    if scan.deleted_files:
+        click.echo("\nDeleted files:")
+        for f in scan.deleted_files:
+            click.echo(f"  - {f}")
+    if scan.ignored_files:
+        click.echo("\nIgnored files:")
+        for f in scan.ignored_files:
+            click.echo(f"  x {f}")
+    if scan.broken_links:
+        click.echo("\nBroken links:")
+        for f in scan.broken_links:
+            click.echo(f"  ! {f}")
+        if not no_fail_on_broken:
+            sys.exit(BROKEN_LINKS_EXIT_CODE)
 
 
 if __name__ == "__main__":

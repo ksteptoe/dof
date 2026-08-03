@@ -1,0 +1,11 @@
+# Keep internal working documents and agent tooling out of the published sdist.
+# setuptools_scm's file finder ships every git-tracked file by default, so anything
+# internal has to be excluded explicitly here.
+exclude CLAUDE.md
+exclude PLAN.md
+exclude HANDOFF.md
+exclude coverage.xml
+prune .claude
+prune .stamps
+prune tmp
+prune .idea

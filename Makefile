@@ -183,11 +183,28 @@ test: $(UNIT_STAMP) $(INTEG_STAMP)
 	"$(PY)" -m coverage xml
 	@echo "✅ Unit + Integration tests up-to-date (not live)"
 
+# NOTE: the coverage gate is NOT specified here. It lives in pyproject.toml under
+# [tool.coverage.report] fail_under, which pytest-cov honours automatically. Do not
+# reintroduce --cov-fail-under; one number, one place.
 test-all: $(ENV_STAMP)
-	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml --cov-fail-under=40
+	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml
 
+# A zero-collection run must never look like a pass: pytest exit code 5 is reported
+# loudly and propagated as a failure, exactly like any other red result.
+# NOTE: `$$?`/`$$status` — a single `$` would be eaten by Make before the shell sees it.
+# No --cov here on purpose: the coverage gate belongs to test-all and to the single
+# fail_under in pyproject.toml, and a live-only run would trip it spuriously.
 test-live: $(ENV_STAMP)
-	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --cov=$(PKG) --cov-report=xml
+	set +e; \
+	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --no-cov; \
+	status=$$?; \
+	set -e; \
+	if [ "$$status" -eq 5 ]; then \
+	  echo "*** FAIL: no tests matched -m live. The 'live' marker is registered but no test applies it."; \
+	  echo "*** A green here would mean live coverage you do not actually have."; \
+	  exit 5; \
+	fi; \
+	exit $$status
 
 clean-tests:
 	rm -rf $(STAMPS_DIR)

@@ -11,6 +11,11 @@ Key behaviour:
   - content changed -> increment Version, update Last Seen (Date Found remains first-seen)
   - file deleted -> keep row (unless --prune-missing), Last Seen frozen at last scan
   - file ignored via .treasureignore -> remove from map
+  - file moved/renamed -> the existing row is relinked to the new location, keeping
+    Date Found and Description; ``Status`` becomes ``Moved`` and ``Previous Location``
+    records where it came from
+  - row whose link can no longer be resolved -> ``Status`` becomes ``Broken`` and the
+    row is highlighted red in the workbook
 """
 
 from __future__ import annotations
@@ -27,11 +32,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.request import url2pathname
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -151,7 +157,18 @@ REQUIRED_COLUMNS = [
     "Link",
     "Version",
     "Location",
+    "Status",
+    "Previous Location",
 ]
+
+STATUS_OK = "OK"
+STATUS_MOVED = "Moved"
+STATUS_BROKEN = "Broken"
+
+# Excel's standard "Bad" style colours.
+BROKEN_FILL = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
+BROKEN_FONT = Font(color="FF9C0006")
+DEFAULT_FILL = PatternFill()
 
 
 class OutputFormat(Enum):
@@ -166,6 +183,8 @@ class ChangeType(Enum):
     UNCHANGED = "unchanged"
     DELETED = "deleted"
     IGNORED = "ignored"
+    MOVED = "moved"
+    BROKEN = "broken"
 
 
 @dataclass
@@ -176,6 +195,7 @@ class FileChange:
     change_type: ChangeType
     old_version: Optional[str] = None
     new_version: Optional[str] = None
+    previous_location: Optional[str] = None
 
 
 @dataclass
@@ -188,6 +208,8 @@ class ScanResult:
     unchanged_files: List[str] = field(default_factory=list)
     deleted_files: List[str] = field(default_factory=list)
     ignored_files: List[str] = field(default_factory=list)
+    moved_files: List[Tuple[str, str]] = field(default_factory=list)
+    broken_links: List[str] = field(default_factory=list)
     changes: List[FileChange] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -198,10 +220,14 @@ class ScanResult:
             f"  Updated:   {len(self.updated_files)}",
             f"  Unchanged: {len(self.unchanged_files)}",
         ]
+        if self.moved_files:
+            lines.append(f"  Moved:     {len(self.moved_files)}")
         if self.deleted_files:
             lines.append(f"  Deleted:   {len(self.deleted_files)}")
         if self.ignored_files:
             lines.append(f"  Ignored:   {len(self.ignored_files)}")
+        if self.broken_links:
+            lines.append(f"  Broken:    {len(self.broken_links)}")
         return "\n".join(lines)
 
 
@@ -213,6 +239,23 @@ class FoundFile:
     suffix: str
     file_type: str
     sha256: Optional[str]
+    size: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class MetaEntry:
+    """Per-file fingerprint stored on the hidden meta sheet."""
+
+    sha256: Optional[str] = None  # SHA-256 of the content, None when it could not be read
+    size: Optional[int] = None  # size in bytes, None when it could not be read
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """Returned by ``create_or_update_treasure_map(..., with_result=True)``."""
+
+    path: Path  # path of the file that was written
+    scan: ScanResult  # full record of what changed during the scan
 
 
 def _safe_save_workbook(wb, dest: Path) -> Path:
@@ -292,6 +335,29 @@ def _safe_sha256_file(path: Path) -> Optional[str]:
     """
     try:
         return _sha256_file(path)
+    except (PermissionError, OSError):
+        return None
+
+
+def _safe_file_size(path: Path) -> Optional[int]:
+    """Best-effort file size in bytes.
+
+    Mirrors :func:`_safe_sha256_file`: OneDrive placeholders and Windows file locks
+    can raise ``PermissionError``/``OSError``, in which case we return ``None`` rather
+    than aborting the scan.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        File to stat.
+
+    Returns
+    -------
+    int or None
+        Size in bytes, or ``None`` when it cannot be determined.
+    """
+    try:
+        return path.stat().st_size
     except (PermissionError, OSError):
         return None
 
@@ -471,6 +537,7 @@ def discover_documents(
                     suffix=suffix,
                     file_type=_infer_file_type(suffix),
                     sha256=_safe_sha256_file(p),
+                    size=_safe_file_size(p),
                 )
             )
 
@@ -603,30 +670,47 @@ def _meta_headers(meta_ws: Worksheet) -> Dict[str, int]:
     if not mapping:
         meta_ws.cell(1, 1, "Location")
         meta_ws.cell(1, 2, "Sha256")
-        mapping = {"Location": 1, "Sha256": 2}
+        meta_ws.cell(1, 3, "Size")
+        mapping = {"Location": 1, "Sha256": 2, "Size": 3}
+    elif "Size" not in mapping:
+        # Migrate a workbook written before sizes were recorded.
+        col = meta_ws.max_column + 1
+        meta_ws.cell(1, col, "Size")
+        mapping["Size"] = col
     return mapping
 
 
-def _read_meta(meta_ws: Worksheet) -> Dict[str, Optional[str]]:
+def _read_meta(meta_ws: Worksheet) -> Dict[str, MetaEntry]:
     mapping = _meta_headers(meta_ws)
-    out: Dict[str, Optional[str]] = {}
+    size_col = mapping.get("Size")
+    out: Dict[str, MetaEntry] = {}
     for r in range(2, meta_ws.max_row + 1):
         loc = meta_ws.cell(r, mapping["Location"]).value
+        if not loc:
+            continue
         sha = meta_ws.cell(r, mapping["Sha256"]).value
-        if loc:
-            out[str(loc)] = str(sha) if sha is not None else None
+        size: Optional[int] = None
+        if size_col is not None:
+            raw = meta_ws.cell(r, size_col).value
+            try:
+                size = int(raw) if raw is not None and str(raw).strip() != "" else None
+            except (TypeError, ValueError):
+                size = None
+        out[str(loc)] = MetaEntry(str(sha) if sha is not None else None, size)
     return out
 
 
-def _write_meta(meta_ws: Worksheet, meta: Dict[str, Optional[str]]) -> None:
+def _write_meta(meta_ws: Worksheet, meta: Dict[str, MetaEntry]) -> None:
     mapping = _meta_headers(meta_ws)
     # clear old
     if meta_ws.max_row > 1:
         meta_ws.delete_rows(2, meta_ws.max_row - 1)
     # write deterministic
     for i, loc in enumerate(sorted(meta.keys(), key=lambda s: s.lower()), start=2):
+        entry = meta[loc]
         meta_ws.cell(i, mapping["Location"], loc)
-        meta_ws.cell(i, mapping["Sha256"], meta[loc])
+        meta_ws.cell(i, mapping["Sha256"], entry.sha256)
+        meta_ws.cell(i, mapping["Size"], entry.size)
 
 
 def _parse_version(v: object) -> Tuple[int, int]:
@@ -700,6 +784,236 @@ def _write_csv(output_path: Path, rows: Dict[str, Dict[str, object]]) -> Path:
     return output_path
 
 
+def _detect_moves(
+    *,
+    unmatched_found: List[FoundFile],
+    updated_rows: Dict[str, Dict[str, object]],
+    meta: Dict[str, MetaEntry],
+    found_locations: Set[str],
+    scan_result: ScanResult,
+    today: date,
+    sharepoint_base_url: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Relink rows whose underlying file has moved or been renamed.
+
+    Two tiers of evidence are used, in order. Tier 1 pairs an orphaned row with a
+    discovered file having an identical SHA-256; the row keeps its Version. Tier 2
+    pairs on identical file name, byte size and file type; because the content has
+    changed, the row's Version is bumped. Anything still unpaired is left alone and
+    will become a new row (Tier 3) or be pruned.
+
+    A discovered file must have a recorded size greater than zero to be paired by
+    either tier. Every empty file shares the same SHA-256 and the same size, so neither
+    signal is evidence of a move for a zero-byte file; such files always fall through
+    to Tier 3. Tier 1 additionally accepts an orphaned row whose recorded size is
+    ``None`` -- a row carried over from a workbook written before sizes were stored --
+    because a matching SHA-256 is strong evidence on its own. Where the orphan's size
+    *is* known it must equal the discovered file's; a hash match contradicted by the
+    recorded size means one of the two records is stale, so the pair is skipped rather
+    than guessed at. Tier 2 requires a known, non-zero size on both sides.
+
+    A row is never matched on a ``None`` hash or size, a discovered file is never
+    consumed by more than one row, and all iteration is deterministically sorted.
+
+    Parameters
+    ----------
+    unmatched_found : list of FoundFile
+        Discovered files that have no row at their own location.
+    updated_rows : dict
+        Mutable map of location -> row; matched rows are re-keyed in place.
+    meta : dict
+        Mutable map of location -> :class:`MetaEntry`; re-keyed alongside the rows.
+    found_locations : set of str
+        Every location discovered by this scan, used to identify orphaned rows.
+    scan_result : ScanResult
+        Mutated to record moves.
+    today : datetime.date
+        Date to stamp into ``Last Seen``.
+    sharepoint_base_url : str or None, optional
+        Base URL used to rebuild the row's hyperlink.
+
+    Returns
+    -------
+    list of tuple of (str, str)
+        ``(old_location, new_location)`` for each move detected.
+    """
+    moves: List[Tuple[str, str]] = []
+    if not unmatched_found:
+        return moves
+
+    orphan_locs = [loc for loc in sorted(updated_rows, key=str.lower) if loc not in found_locations]
+    if not orphan_locs:
+        return moves
+
+    def relink(old_loc: str, f: FoundFile, *, bump_version: bool) -> None:
+        # Invariant: a moved file's new location must not already hold a row.
+        assert f.rel_location not in updated_rows, f"move would merge rows at {f.rel_location}"
+        row = updated_rows.pop(old_loc)
+        meta.pop(old_loc, None)
+        old_version = str(row.get("Version", "1.0"))
+        row["Location"] = f.rel_location
+        row["File Name"] = f.filename
+        row["File Type"] = f.file_type
+        row["Previous Location"] = old_loc
+        row["Status"] = STATUS_MOVED
+        row["Last Seen"] = today
+        if bump_version:
+            row["Version"] = _bump_version(row.get("Version"))
+        row["Link"] = {
+            "target": _build_sharepoint_url(sharepoint_base_url, f.rel_location, f.abs_path),
+            "text": f.filename,
+        }
+        updated_rows[f.rel_location] = row
+        meta[f.rel_location] = MetaEntry(f.sha256, f.size)
+        moves.append((old_loc, f.rel_location))
+        scan_result.moved_files.append((old_loc, f.rel_location))
+        scan_result.changes.append(
+            FileChange(
+                f.rel_location,
+                ChangeType.MOVED,
+                old_version,
+                str(row.get("Version", old_version)),
+                previous_location=old_loc,
+            )
+        )
+
+    remaining_orphans = list(orphan_locs)
+    remaining_found = sorted(unmatched_found, key=lambda f: f.rel_location.lower())
+
+    # ---------- Tier 1: exact SHA-256 ----------
+    by_hash_orphan: Dict[str, List[str]] = {}
+    orphan_sizes: Dict[str, Optional[int]] = {}
+    for loc in remaining_orphans:
+        entry = meta.get(loc)
+        if entry is None or entry.sha256 is None:
+            continue
+        # size None is a legacy row from a pre-Size workbook; size 0 is never evidence.
+        if entry.size is not None and entry.size <= 0:
+            continue
+        by_hash_orphan.setdefault(entry.sha256, []).append(loc)
+        orphan_sizes[loc] = entry.size
+
+    by_hash_found: Dict[str, List[FoundFile]] = {}
+    for f in remaining_found:
+        if f.sha256 is None or not f.size:
+            continue
+        by_hash_found.setdefault(f.sha256, []).append(f)
+
+    tier1_pairs: List[Tuple[str, FoundFile]] = []
+    for sha in sorted(set(by_hash_orphan) & set(by_hash_found)):
+        candidates = list(by_hash_found[sha])
+        for oloc in sorted(by_hash_orphan[sha], key=str.lower):
+            osize = orphan_sizes[oloc]
+            # A hash match contradicted by a recorded size means a stale record: skip.
+            eligible = [f for f in candidates if osize is None or f.size == osize]
+            if not eligible:
+                continue
+            obase = PurePosixPath(oloc).name.lower()
+            chosen = next((f for f in eligible if f.filename.lower() == obase), eligible[0])
+            candidates.remove(chosen)
+            tier1_pairs.append((oloc, chosen))
+
+    for oloc, f in tier1_pairs:
+        relink(oloc, f, bump_version=False)
+        remaining_orphans.remove(oloc)
+        remaining_found.remove(f)
+
+    # ---------- Tier 2: name + size + file type ----------
+    by_key_orphan: Dict[Tuple[str, int, str], List[str]] = {}
+    for loc in remaining_orphans:
+        entry = meta.get(loc)
+        if entry is None or not entry.size:
+            continue
+        row = updated_rows.get(loc, {})
+        name = str(row.get("File Name") or PurePosixPath(loc).name).lower()
+        ftype = str(row.get("File Type") or "")
+        by_key_orphan.setdefault((name, entry.size, ftype), []).append(loc)
+
+    by_key_found: Dict[Tuple[str, int, str], List[FoundFile]] = {}
+    for f in remaining_found:
+        if not f.size:
+            continue
+        by_key_found.setdefault((f.filename.lower(), f.size, f.file_type), []).append(f)
+
+    tier2_pairs: List[Tuple[str, FoundFile]] = []
+    for key in sorted(set(by_key_orphan) & set(by_key_found)):
+        olocs = sorted(by_key_orphan[key], key=str.lower)
+        fs = sorted(by_key_found[key], key=lambda f: f.rel_location.lower())
+        for oloc, f in zip(olocs, fs, strict=False):
+            tier2_pairs.append((oloc, f))
+
+    for oloc, f in tier2_pairs:
+        relink(oloc, f, bump_version=True)
+
+    return moves
+
+
+def _link_is_resolvable(
+    row: Dict[str, object],
+    *,
+    root_dir: Path,
+    found_locations: Set[str],
+    sharepoint_base_url: Optional[str],
+) -> bool:
+    """Return True when this row's Link target can be resolved without network access.
+
+    A ``file://`` target resolves when the referenced path exists on disk. A SharePoint
+    target resolves when its path, relative to the configured base URL, matches a
+    location discovered in this scan. An ``http(s)://`` target with no configured base
+    URL was pasted in by hand and is always treated as resolvable, because dof has no
+    way to judge it offline.
+
+    Parameters
+    ----------
+    row : dict
+        Internal row representation.
+    root_dir : pathlib.Path
+        Resolved root of the scanned tree.
+    found_locations : set of str
+        Locations discovered by this scan.
+    sharepoint_base_url : str or None
+        Configured SharePoint/OneDrive base URL, if any.
+
+    Returns
+    -------
+    bool
+        True when the link resolves, False when it is broken.
+    """
+    location = str(row.get("Location") or "")
+
+    link = row.get("Link")
+    target = ""
+    if isinstance(link, dict):
+        target = str(link.get("target") or "")
+    elif isinstance(row.get("__link_target"), str):
+        target = str(row["__link_target"])
+
+    if target.startswith("file:"):
+        parsed = urllib.parse.urlparse(target)
+        path_part = url2pathname(parsed.path)
+        if parsed.netloc:
+            path_part = f"//{parsed.netloc}{path_part}"
+        try:
+            return Path(path_part).exists()
+        except OSError:
+            return False
+
+    if target.startswith(("http://", "https://")):
+        if not sharepoint_base_url:
+            return True
+        base = sharepoint_base_url.rstrip("/") + "/"
+        if not target.startswith(base):
+            return True
+        return urllib.parse.unquote(target[len(base) :]) in found_locations
+
+    if not location:
+        return False
+    try:
+        return (root_dir / location).exists()
+    except OSError:
+        return False
+
+
 def create_or_update_treasure_map(
     *,
     root_dir: Path,
@@ -711,22 +1025,43 @@ def create_or_update_treasure_map(
     dry_run: bool = False,
     output_format: OutputFormat = OutputFormat.XLSX,
     progress_callback: Optional[Callable[[str], None]] = None,
-) -> Path | ScanResult:
+    detect_moves: bool = True,
+    with_result: bool = False,
+) -> Path | ScanResult | WriteOutcome:
     """Scan root_dir and create/update the treasure map.
 
-    Args:
-        root_dir: Directory to scan for documents.
-        output_xlsx: Output file path (extension ignored for JSON/CSV formats).
-        sharepoint_base_url: Optional SharePoint base URL for hyperlinks.
-        today: Override today's date (for testing).
-        suffixes: File extensions to include.
-        prune_missing: If True (default), remove rows for files that no longer exist.
-        dry_run: If True, compute changes but don't write files. Returns ScanResult.
-        output_format: Output format (XLSX, JSON, or CSV).
-        progress_callback: Optional callback for progress reporting.
+    Parameters
+    ----------
+    root_dir : pathlib.Path
+        Directory to scan for documents.
+    output_xlsx : pathlib.Path
+        Output file path (extension auto-adjusted for JSON/CSV formats).
+    sharepoint_base_url : str or None, optional
+        SharePoint base URL for hyperlinks; local ``file://`` URIs are used otherwise.
+    today : datetime.date or None, optional
+        Override today's date (for testing).
+    suffixes : iterable of str or None, optional
+        File extensions to include.
+    prune_missing : bool, default True
+        If True, remove rows for files that no longer exist.
+    dry_run : bool, default False
+        If True, compute changes but do not write anything.
+    output_format : OutputFormat, default OutputFormat.XLSX
+        Output format (XLSX, JSON, or CSV).
+    progress_callback : callable or None, optional
+        Called with each relative path as it is scanned.
+    detect_moves : bool, default True
+        If True, relink rows whose file has moved or been renamed. Set False to get
+        the older "deleted plus new" behaviour.
+    with_result : bool, default False
+        If True, a non-dry run returns a :class:`WriteOutcome` carrying both the
+        written path and the :class:`ScanResult`, instead of the path alone.
 
-    Returns:
-        Path to written file, or ScanResult if dry_run=True.
+    Returns
+    -------
+    pathlib.Path or ScanResult or WriteOutcome
+        ``ScanResult`` when ``dry_run`` is True; otherwise the path written, or a
+        ``WriteOutcome`` when ``with_result`` is True.
     """
     today = today or date.today()
     root_dir = root_dir.resolve()
@@ -744,7 +1079,7 @@ def create_or_update_treasure_map(
     # For JSON/CSV with no existing file, we don't need to load a workbook
     if output_format != OutputFormat.XLSX and not output_xlsx.exists():
         existing_rows: Dict[str, Dict[str, object]] = {}
-        meta: Dict[str, Optional[str]] = {}
+        meta: Dict[str, MetaEntry] = {}
         wb = None
         ws = None
         meta_ws = None
@@ -759,9 +1094,13 @@ def create_or_update_treasure_map(
     # We'll build a new in-memory table of rows, preserving existing rows + appending new ones.
     updated_rows: Dict[str, Dict[str, object]] = dict(existing_rows)
 
+    found_locations = {f.rel_location for f in found}
+    unmatched_found: List[FoundFile] = []
+
     for f in found:
         loc = f.rel_location
-        prev_sha = meta.get(loc)
+        prev_entry = meta.get(loc)
+        prev_sha = prev_entry.sha256 if prev_entry else None
 
         if loc in existing_rows:
             row = updated_rows[loc]
@@ -769,9 +1108,13 @@ def create_or_update_treasure_map(
 
             # Always update Last Seen for files that still exist in the scan
             row["Last Seen"] = today
+            # Status reflects the current scan; a stale "Moved" must not stick.
+            # Previous Location is historical and deliberately left untouched.
+            row["Status"] = STATUS_OK
 
             # identical (including both None) -> no change (except Last Seen)
             if prev_sha == f.sha256:
+                meta[loc] = MetaEntry(f.sha256, f.size)
                 scan_result.unchanged_files.append(loc)
                 scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
                 continue
@@ -780,24 +1123,42 @@ def create_or_update_treasure_map(
             if _hash_changed(prev_sha, f.sha256):
                 new_version = _bump_version(row.get("Version"))
                 row["Version"] = new_version
-                meta[loc] = f.sha256
+                meta[loc] = MetaEntry(f.sha256, f.size)
                 scan_result.updated_files.append(loc)
                 scan_result.changes.append(FileChange(loc, ChangeType.UPDATED, old_version, new_version))
                 continue
 
             # Previously unreadable/unhashed but now readable -> record hash, no bump
             if prev_sha is None and f.sha256 is not None:
-                meta[loc] = f.sha256
+                meta[loc] = MetaEntry(f.sha256, f.size)
                 scan_result.unchanged_files.append(loc)
                 scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
                 continue
 
             # Hashed before but unreadable now -> no change
+            meta[loc] = MetaEntry(prev_sha, f.size if f.size is not None else (prev_entry.size if prev_entry else None))
             scan_result.unchanged_files.append(loc)
             scan_result.changes.append(FileChange(loc, ChangeType.UNCHANGED, old_version, old_version))
             continue
 
-        # New file -> create a new row
+        # No row at this location: defer, so move detection gets a chance first.
+        unmatched_found.append(f)
+
+    if detect_moves:
+        _detect_moves(
+            unmatched_found=unmatched_found,
+            updated_rows=updated_rows,
+            meta=meta,
+            found_locations=found_locations,
+            scan_result=scan_result,
+            today=today,
+            sharepoint_base_url=sharepoint_base_url,
+        )
+        moved_to = {new for _old, new in scan_result.moved_files}
+        unmatched_found = [f for f in unmatched_found if f.rel_location not in moved_to]
+
+    for f in unmatched_found:
+        loc = f.rel_location
         link_target = _build_sharepoint_url(sharepoint_base_url, loc, f.abs_path)
         updated_rows[loc] = {
             "File Name": f.filename,
@@ -808,8 +1169,10 @@ def create_or_update_treasure_map(
             "Link": {"target": link_target, "text": f.filename},
             "Version": "1.0",
             "Location": loc,
+            "Status": STATUS_OK,
+            "Previous Location": "",
         }
-        meta[loc] = f.sha256
+        meta[loc] = MetaEntry(f.sha256, f.size)
         scan_result.new_files.append(loc)
         scan_result.changes.append(FileChange(loc, ChangeType.NEW, None, "1.0"))
 
@@ -825,13 +1188,30 @@ def create_or_update_treasure_map(
 
     if prune_missing:
         # Remove rows for files that no longer exist in the scanned tree.
-        found_locs = {f.rel_location for f in found}
         for loc in list(updated_rows.keys()):
-            if loc not in found_locs:
+            if loc not in found_locations:
                 updated_rows.pop(loc, None)
                 meta.pop(loc, None)
                 scan_result.deleted_files.append(loc)
                 scan_result.changes.append(FileChange(loc, ChangeType.DELETED))
+
+    # Final pass: settle Status for every surviving row (all formats, dry runs included).
+    for loc in sorted(updated_rows, key=lambda s: s.lower()):
+        row = updated_rows[loc]
+        if row.get("Previous Location") is None:
+            row["Previous Location"] = ""
+        if _link_is_resolvable(
+            row,
+            root_dir=root_dir,
+            found_locations=found_locations,
+            sharepoint_base_url=sharepoint_base_url,
+        ):
+            if row.get("Status") != STATUS_MOVED:
+                row["Status"] = STATUS_OK
+        else:
+            row["Status"] = STATUS_BROKEN
+            scan_result.broken_links.append(loc)
+            scan_result.changes.append(FileChange(loc, ChangeType.BROKEN))
 
     # If dry run, return the scan result without writing
     if dry_run:
@@ -843,13 +1223,13 @@ def create_or_update_treasure_map(
         output_path = output_xlsx.with_suffix(".json")
         written = _write_json(output_path, updated_rows)
         _logger.info("Wrote %s", written)
-        return written
+        return WriteOutcome(written, scan_result) if with_result else written
 
     if output_format == OutputFormat.CSV:
         output_path = output_xlsx.with_suffix(".csv")
         written = _write_csv(output_path, updated_rows)
         _logger.info("Wrote %s", written)
-        return written
+        return WriteOutcome(written, scan_result) if with_result else written
 
     # XLSX format - need workbook
     if wb is None:
@@ -864,6 +1244,7 @@ def create_or_update_treasure_map(
     # Keep deterministic ordering by Location
     for row_idx, loc in enumerate(sorted(updated_rows.keys(), key=lambda s: s.lower()), start=2):
         row = updated_rows[loc]
+        is_broken = row.get("Status") == STATUS_BROKEN
         for col_name in REQUIRED_COLUMNS:
             c = ws.cell(row=row_idx, column=mapping[col_name])
             if col_name == "Link":
@@ -879,6 +1260,16 @@ def create_or_update_treasure_map(
                         c.value = row.get("Link", "")
             else:
                 c.value = row.get(col_name, "")
+
+            # Rows are rewritten in place, so formatting must be reset every run or a
+            # previously-broken row keeps its red fill at that index.
+            if is_broken:
+                c.fill = BROKEN_FILL
+                c.font = BROKEN_FONT
+            else:
+                c.fill = DEFAULT_FILL
+                if col_name != "Link":
+                    c.font = Font()
 
         for col_name in ("Date Found", "Last Seen"):
             dcell = ws.cell(row=row_idx, column=mapping[col_name])
@@ -897,7 +1288,7 @@ def create_or_update_treasure_map(
             written,
         )
 
-    return written
+    return WriteOutcome(written, scan_result) if with_result else written
 
 
 def dof_api(
@@ -910,8 +1301,25 @@ def dof_api(
     dry_run: bool = False,
     output_format: OutputFormat = OutputFormat.XLSX,
     progress_callback: Optional[Callable[[str], None]] = None,
-) -> Path | ScanResult:
-    """CLI-friendly wrapper."""
+    detect_moves: bool = True,
+    with_result: bool = False,
+) -> Path | ScanResult | WriteOutcome:
+    """CLI-friendly wrapper around :func:`create_or_update_treasure_map`.
+
+    Parameters
+    ----------
+    loglevel : int or None
+        Logging level to configure before scanning.
+    detect_moves : bool, default True
+        If True, relink rows whose file has moved or been renamed.
+    with_result : bool, default False
+        If True, a non-dry run returns a :class:`WriteOutcome` instead of a path.
+
+    Returns
+    -------
+    pathlib.Path or ScanResult or WriteOutcome
+        See :func:`create_or_update_treasure_map`.
+    """
     setup_logging(loglevel)
     return create_or_update_treasure_map(
         root_dir=root_dir,
@@ -921,4 +1329,6 @@ def dof_api(
         dry_run=dry_run,
         output_format=output_format,
         progress_callback=progress_callback,
+        detect_moves=detect_moves,
+        with_result=with_result,
     )

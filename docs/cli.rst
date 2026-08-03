@@ -44,8 +44,13 @@ Options
 
    - New files that would be added
    - Updated files (content changed)
-   - Deleted files that will be removed (default behavior)
+   - Moved files (``old -> new``)
+   - Deleted files that will be removed (default behaviour)
    - Ignored files (matching ``.treasureignore`` patterns)
+   - Broken links
+
+   The Moved, Deleted, Ignored and Broken sections are also printed on a real
+   (non-dry-run) run; previously they appeared only here.
 
 .. option:: --keep-missing
 
@@ -55,6 +60,37 @@ Options
    By default, deleted files are removed from the map. Use this flag
    to preserve their rows with the ``Last Seen`` date frozen at the
    last scan when they existed.
+
+   Retained rows point at files that are gone, so they are marked
+   ``Status = Broken`` and dof exits 2. Combine with
+   ``--no-fail-on-broken`` if that is expected.
+
+.. option:: --no-detect-moves
+
+   Treat a moved or renamed file as a deletion plus a new document.
+
+   Move tracking is on by default, so a relocated document normally keeps its
+   row along with ``Date Found``, ``Description`` and ``Version``. This flag
+   switches matching off entirely and restores the pre-feature behaviour.
+
+   Reach for it if the tier-2 heuristic (same file name, byte size and file
+   type) ever pairs two unrelated documents: with the flag set, nothing is
+   paired, so no row can be relinked to the wrong file. The cost is that
+   genuine moves lose their history.
+
+   **Default:** off (moves are tracked)
+
+.. option:: --no-fail-on-broken
+
+   Exit 0 even when broken links are found.
+
+   Broken rows are still marked ``Status = Broken``, still highlighted red in
+   the workbook, and still listed under ``Broken links:``; only the non-zero
+   exit is suppressed. Intended for cron jobs and CI steps that run
+   ``dof --keep-missing``, where broken rows are the point of the flag rather
+   than a fault.
+
+   **Default:** off (broken links cause exit 2)
 
 .. option:: --sharepoint-base URL
 
@@ -138,6 +174,47 @@ Examples
 
    dof --keep-missing
 
+   # Output:
+   # Wrote: /docs/treasure_map.xlsx
+   #
+   # Broken links:
+   #   ! notes/old_minutes.docx
+   #
+   # Exit code: 2
+
+**Preserve deleted files without failing the build:**
+
+.. code-block:: bash
+
+   dof --keep-missing --no-fail-on-broken   # exit code: 0
+
+**After a directory restructure:**
+
+.. code-block:: bash
+
+   dof
+
+   # Output:
+   # Wrote: /docs/treasure_map.xlsx
+   #
+   # Moved files:
+   #   > docs/proposal.pdf -> archive/2025/proposal.pdf
+
+**Without move tracking:**
+
+.. code-block:: bash
+
+   dof --no-detect-moves
+
+   # Output:
+   # Wrote: /docs/treasure_map.xlsx
+   #
+   # Deleted files:
+   #   - docs/proposal.pdf
+   #
+   # The relocated file is reported as new instead, and starts again at
+   # version 1.0 with an empty Description.
+
 **SharePoint integration:**
 
 .. code-block:: bash
@@ -165,6 +242,14 @@ Exit Codes
      - Success
    * - 1
      - Error (see error message for details)
+   * - 2
+     - Broken links are present in the map
+
+.. warning::
+
+   Exit code 2 is new. Scripts and CI steps that run ``dof --keep-missing``
+   against a tree containing deleted files will now fail unless they pass
+   ``--no-fail-on-broken``.
 
 
 Environment Variables
