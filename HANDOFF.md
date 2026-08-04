@@ -8,9 +8,9 @@ State-of-play for `dof`. Read this first; update it after completing a task or r
 |---|---|
 | **Updated** | 2026-08-04 |
 | **Branch** | `main` (in sync with `origin/main`) |
-| **HEAD** | `464b898` — Repair stale links instead of reporting them broken |
-| **Latest tag** | `v0.1.2` |
-| **Published to PyPI** | **Yes** — https://pypi.org/project/treasure-map/0.1.2/ |
+| **HEAD** | `6efc56f` — Pin ruff, drop stale RTD config, and make `make test` real |
+| **Latest tag** | `v0.1.3` |
+| **Published to PyPI** | **Yes** — https://pypi.org/project/treasure-map/0.1.3/ |
 | **PyPI name** | **`treasure-map`** — install with `pip install treasure-map`, then use as `dof` |
 | **Working tree** | Clean |
 | **Gates** | lint clean · 98 passed / 2 skipped · coverage 89.11% (gate 85, enforced in CI) · docs build OK · `twine check` OK |
@@ -103,25 +103,20 @@ Consequences to remember:
 ## Open tasks
 
 **Next up**
-- [ ] **Pin `ruff` in CI.** The lint job does `pip install ruff` unpinned while
-      `pyproject.toml` says `ruff>=0.6`, so a new ruff release can turn CI red
-      spontaneously while local stays green. CI also runs `ruff check src tests` where
-      the Makefile runs `ruff check .`.
-- [ ] **`build` job never runs `twine check dist/*`**, so packaging metadata errors only
-      surface at upload time.
+
+- [ ] **The `live` marker is registered but no test applies it**, so `make test-live`
+      collects nothing. Fine today (no live infrastructure), but do not treat it as a
+      safety net — verify a test actually carries the marker before relying on it.
 
 **Lower priority**
 
-- [ ] **Stale `.readthedocs.yml`** shadowed by `.readthedocs.yaml`. The `.yml` pins
-      Python 3.11, below `requires-python = ">=3.12"` — harmless while `.yaml` wins,
-      a trap if precedence ever shifts. Recommend deleting it.
-- [ ] **Makefile stamp recipes swallow pytest exit 5** (~lines 146, 169), so a break in
-      test discovery would show as green. They also contain a `$?`-vs-`$$?` Make
-      expansion bug. The `test-live` recipe was fixed; these were left alone.
 - [ ] **Symlink support unimplemented** — two skipped tests in
       `tests/unit/test_edge_cases.py` (`resolve()` follows links outside root).
-- [ ] `docs/CONTRIBUTING.rst` still carries 11 PyScaffold TODO placeholders, the only
-      remaining Sphinx warnings.
+- [ ] `CONTRIBUTING.rst` still carries 11 PyScaffold TODO placeholders, the only
+      remaining Sphinx warnings. Adding `-W` to the docs gate needs these cleared first.
+- [ ] **`.readthedocs.yaml` does not declare `formats: [pdf]`**, which the deleted
+      `.yml` did. PDF was never actually built (RTD always preferred the `.yaml`), so
+      nothing regressed — add it only if PDF output is wanted.
 
 ## Known sharp edges
 
@@ -133,6 +128,17 @@ Consequences to remember:
 - **Coverage config lives only in `pyproject.toml`.** A root `.coveragerc` used to
   shadow it entirely — coverage.py finds `.coveragerc` first and stops, so the whole
   `[tool.coverage.*]` block was dead. Do not reintroduce one.
+- **`make test` was a false green until v0.1.3.** Its content signature always evaluated
+  to the empty string and a `$?`-vs-`$$?` bug let a failing pytest run mark the stamp as
+  a pass, so it ran once and reported success forever. Fixed: each stage writes
+  self-contained coverage data next to its stamp and promotes it **only on success**, so
+  the aggregate is a pure function of the stamps. Do not reintroduce `--cov-append`
+  across stages, and keep `coverage combine --keep` — without `--keep` the combine step
+  deletes the cache it just read.
+- **Ruff is pinned in three coupled places**: the `lint` extra in `pyproject.toml` is the
+  source of truth, `dev` pulls it in, and `.pre-commit-config.yaml`'s `rev:` mirrors it.
+  Bump all three in the same commit. The `<0.17` ceiling is deliberate — ruff ships new
+  default rules in minor releases.
 
 ## Conventions
 
