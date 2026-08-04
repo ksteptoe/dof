@@ -5,7 +5,23 @@
 ## Installation
 
 ```bash
-pip install dof
+pip install treasure-map
+```
+
+**Installed as `treasure-map`, used as `dof`.** The distribution on PyPI is named
+`treasure-map`; the import package and the console script are both still `dof`.
+`pip install dof` will not work — that name is unavailable on PyPI.
+
+| | Name |
+|---|---|
+| Install | `pip install treasure-map` |
+| Command | `dof` (or `python -m dof`) |
+| Import | `import dof` |
+
+To install from a source checkout:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ## CLI

@@ -18,13 +18,28 @@ Features
 - Dry-run mode for previewing changes
 - Progress indication for large scans
 
+Installation
+------------
+
+.. code-block:: bash
+
+   pip install treasure-map
+
+.. note::
+
+   **Installed as** ``treasure-map``, **used as** ``dof``. The distribution published to
+   PyPI is named ``treasure-map``; the import package (``import dof``) and the console
+   script (``dof``, or ``python -m dof``) are unchanged. ``pip install dof`` will not
+   work, as that name is unavailable on PyPI.
+
+To install from a source checkout::
+
+   pip install -e ".[dev]"
+
 Quick Start
 -----------
 
 .. code-block:: bash
-
-   # Install
-   pip install dof
 
    # Scan current directory
    dof

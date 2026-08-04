@@ -2,6 +2,25 @@
 Changelog
 =========
 
+Version 0.1.1
+=============
+
+Changed
+-------
+
+- **The distribution is now published as** ``treasure-map`` **instead of** ``dof``.
+  PyPI rejects ``dof`` as a new project name, because it normalises to a name already
+  taken by an existing project (``pydof``), so 0.1.0 could never be published. Install
+  with ``pip install treasure-map``.
+- Documentation updated throughout to give the new installation command.
+
+Unchanged
+---------
+
+- The import package is still ``dof`` (``import dof``), and the console script is still
+  ``dof`` (or ``python -m dof``). Only the name you install by has changed; no code,
+  API or command-line interface is affected.
+
 Version 0.1.0
 =============
 

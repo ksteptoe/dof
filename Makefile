@@ -38,8 +38,13 @@ PYTHON_SYS := $(shell command -v python >/dev/null 2>&1 && echo python || echo p
 # Linux friendly too
 PY = $(if $(wildcard $(VENV)/Scripts/python.exe),$(VENV)/Scripts/python.exe,$(VENV)/bin/python)
 
-# Main code package (templated)
+# Main code package (templated). NOTE: PKG is the *import* package (src/dof, --cov
+# target, `python -m dof`); DIST is the *distribution* name on PyPI. They differ here:
+# `dof` is blocked on PyPI (it normalises onto the existing `pydof`), so the project
+# ships as `treasure-map` but is still imported and invoked as `dof`. Anything that
+# talks to pip/PyPI/importlib.metadata must use DIST, not PKG.
 PKG        :=  dof
+DIST       :=  treasure-map
 CODE_DIRS  := src/$(PKG)
 STAMPS_DIR := .stamps
 UNIT_STAMP  := $(STAMPS_DIR)/unit.ok
@@ -309,7 +314,7 @@ changelog-md: fetch-tags
 release-show: fetch-tags $(ENV_STAMP) venv-check
 	@echo "python exe:"; "$(PY)" -c "import sys; print(sys.executable)"
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
-	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
+	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(DIST)'))" || echo "(package not installed)"
 	@echo "Last Git tag: $(LAST_TAG)"
 	@echo "Parsed: MAJOR=$(MAJOR) MINOR=$(MINOR) PATCH=$(PATCH)"
 

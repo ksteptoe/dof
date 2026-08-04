@@ -87,7 +87,7 @@ source_suffix = ".rst"
 master_doc = "index"
 
 # General information about the project.
-project = "dof"
+project = "treasure-map"
 copyright = "2025, Kevin Steptoe"
 
 # The version info for the project you're documenting, acts as replacement for
@@ -165,7 +165,10 @@ html_theme_options = {"sidebar_width": "300px", "page_width": "1200px"}
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
-# html_title = None
+# `project` is the *distribution* name (what you `pip install`); the command and
+# import package are both `dof`. Spell out both here so a reader arriving from PyPI
+# and a reader who only knows the `dof` command land on the same page.
+html_title = f"treasure-map {release} — the dof CLI"
 
 # A shorter title for the navigation bar.  Default is the same as html_title.
 # html_short_title = None
@@ -226,7 +229,7 @@ html_static_path = ["_static"]
 # html_file_suffix = None
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "dof-doc"
+htmlhelp_basename = "treasure-map-doc"
 
 
 # -- Options for LaTeX output ------------------------------------------------
@@ -242,7 +245,7 @@ latex_elements = {
 
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
-latex_documents = [("index", "user_guide.tex", "dof Documentation", "Kevin Steptoe", "manual")]
+latex_documents = [("index", "user_guide.tex", "treasure-map Documentation", "Kevin Steptoe", "manual")]
 
 # The name of an image file (relative to this directory) to place at the top of
 # the title page.
