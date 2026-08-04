@@ -8,11 +8,12 @@ State-of-play for `dof`. Read this first; update it after completing a task or r
 |---|---|
 | **Updated** | 2026-08-04 |
 | **Branch** | `main` (in sync with `origin/main`) |
-| **HEAD** | `5e765d3` — Track moved files and flag broken links |
+| **HEAD** | `425abbb` — Enforce coverage in CI and guard against a broken venv |
 | **Latest tag** | `v0.1.0` (tagged and pushed) |
 | **Published to PyPI** | **No** — `v0.1.0` is tagged but not uploaded |
 | **Working tree** | Clean |
-| **Gates** | lint clean · 83 passed / 2 skipped · coverage 88.71% (gate 85) · docs build OK · `twine check` OK |
+| **Gates** | lint clean · 83 passed / 2 skipped · coverage 88.71% (gate 85, enforced in CI) · docs build OK · `twine check` OK |
+| **CI** | Green on run 30883566481 — lint + 6-way test matrix (3.12/3.13 × ubuntu/macos/windows) |
 
 ### Build/test commands on this machine
 
