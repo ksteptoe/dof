@@ -175,6 +175,10 @@ def cli(
         click.echo("\nIgnored files:")
         for f in scan.ignored_files:
             click.echo(f"  x {f}")
+    if scan.repaired_links:
+        click.echo("\nRepaired links:")
+        for f in scan.repaired_links:
+            click.echo(f"  * {f}")
     if scan.broken_links:
         click.echo("\nBroken links:")
         for f in scan.broken_links:

@@ -2,6 +2,40 @@
 Changelog
 =========
 
+Version 0.1.2
+=============
+
+Fixed
+-----
+
+- **Renaming or moving the root of a scanned tree no longer breaks every link.**
+  Previously, a row whose file was still present at the same relative ``Location`` kept
+  its stored hyperlink verbatim, so after the top-level folder was renamed - or the tree
+  arrived at a different absolute path on another machine or a re-rooted OneDrive - every
+  row still pointed at the old root. Every one of them was reported ``Broken``, including
+  the ``treasure_map.xlsx`` dof had just written in that same run. Move tracking covered
+  files moving *within* the tree; it did not cover the whole tree moving.
+- dof now **repairs stale links before reporting them**. For any row whose file was found
+  by the scan but whose stored target no longer resolves, the target is regenerated from
+  the current root (or from the configured SharePoint base). Repair is targeted: a link
+  that already resolves is never regenerated, so a hand-edited hyperlink is not clobbered.
+  Simply re-running dof after a root rename now fixes the workbook.
+- **``Broken`` now means "dof cannot repair this", not "this happens to be stale".**
+  Repaired rows are listed under a new ``Repaired links:`` section in the CLI output and
+  do **not** affect the exit code - repair is a success, not a failure. A run that
+  previously exited 2 after a root rename now exits 0.
+
+Added
+-----
+
+- ``ScanResult.repaired_links`` (locations whose link target was regenerated) and
+  ``ChangeType.REPAIRED``.
+- ``ScanResult.summary()`` gains a ``Repaired:`` line, shown only when the count is
+  non-zero. The existing lines are unchanged.
+
+Nothing is broken by this release: no flag, option or signature changes, and the only
+behaviour change is that fewer rows are reported broken.
+
 Version 0.1.1
 =============
 

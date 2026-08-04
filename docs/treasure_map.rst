@@ -145,20 +145,67 @@ Both descriptions and both ``Date Found`` dates survive. ``proposal.pdf`` kept v
 and edited).
 
 
-Broken Links
-------------
+Broken and Repaired Links
+-------------------------
 
-After each scan, dof checks that every row's link can still be resolved. A row that
-fails is marked ``Status = Broken``, highlighted red in the workbook, listed under
+After each scan, dof checks that every row's link can still be resolved - and **repairs
+what it can before reporting anything as broken**.
+
+Repair before report
+~~~~~~~~~~~~~~~~~~~~
+
+If a row's file was found by this scan but its stored target no longer resolves, dof
+regenerates that target from the current scan root, or from the configured SharePoint
+base. Repaired rows are listed under ``Repaired links:`` in the CLI output and **do not
+affect the exit code**; repair is a success, not a failure.
+
+Repair is targeted. A link that already resolves is never regenerated, so a hyperlink you
+edited by hand is left exactly as you wrote it.
+
+The moved root
+~~~~~~~~~~~~~~
+
+The common real-world trigger is the whole tree moving. You rename or reorganise the
+top-level folder, or the tree arrives at a different absolute path - on another machine,
+or after OneDrive re-roots your local copy. Every relative ``Location`` in the workbook is
+still correct, and every file is still present, but every stored absolute link still
+points at the old root.
+
+Move tracking (see above) handles files moving *within* the tree; it does not see the
+tree itself move. Before v0.1.2 dof marked every such row ``Broken`` and exited 2 -
+including the ``treasure_map.xlsx`` it had just written in that same run. A plain re-run
+now repairs them all and exits 0:
+
+.. code-block:: bash
+
+   dof -d /path/to/renamed/tree
+
+   # Output:
+   # Wrote: /path/to/renamed/tree/treasure_map.xlsx
+   #
+   # Repaired links:
+   #   * reports/q4_summary.pdf
+   #   * notes/meeting_2025.docx
+   #
+   # Exit code: 0
+
+What ``Broken`` means
+~~~~~~~~~~~~~~~~~~~~~
+
+``Broken`` means **dof cannot repair this row** - not merely that its link is stale. Such
+a row is marked ``Status = Broken``, highlighted red in the workbook, listed under
 ``Broken links:`` in the CLI output, and causes dof to **exit with code 2**.
 
 This mainly arises with ``--keep-missing``, which deliberately retains rows for files
-that no longer exist. Pass ``--no-fail-on-broken`` to keep the marking and reporting
-while exiting 0:
+that no longer exist; those files really are gone, so there is nothing to regenerate a
+link to. Pass ``--no-fail-on-broken`` to keep the marking and reporting while exiting 0:
 
 .. code-block:: bash
 
    dof --keep-missing --no-fail-on-broken
+
+How links are resolved
+~~~~~~~~~~~~~~~~~~~~~~
 
 Resolution is entirely offline - **dof never makes a network request** when validating
 links:
@@ -222,6 +269,11 @@ When the output workbook already exists, dof applies these rules:
   - ``Date Found``, ``Description`` and version history are preserved
   - ``Previous Location`` records the old path; ``Status`` becomes ``Moved``
   - ``Version`` is bumped only for a tier 2 (moved-and-edited) match
+
+**Files whose stored link has gone stale** (for example after the scan root was renamed):
+  - The link target is regenerated from the current root, or the configured SharePoint base
+  - The row is listed under ``Repaired links:``; the exit code is unaffected
+  - A link that still resolves is left untouched
 
 **Deleted files** (with ``--keep-missing``):
   - Row remains in the map

@@ -47,10 +47,11 @@ Options
    - Moved files (``old -> new``)
    - Deleted files that will be removed (default behaviour)
    - Ignored files (matching ``.treasureignore`` patterns)
+   - Repaired links (stale targets regenerated from the current root)
    - Broken links
 
-   The Moved, Deleted, Ignored and Broken sections are also printed on a real
-   (non-dry-run) run; previously they appeared only here.
+   The Moved, Deleted, Ignored, Repaired and Broken sections are also printed on a
+   real (non-dry-run) run; previously they appeared only here.
 
 .. option:: --keep-missing
 
@@ -89,6 +90,9 @@ Options
    exit is suppressed. Intended for cron jobs and CI steps that run
    ``dof --keep-missing``, where broken rows are the point of the flag rather
    than a fault.
+
+   The flag has no bearing on repaired links, which never cause a non-zero
+   exit in the first place.
 
    **Default:** off (broken links cause exit 2)
 
@@ -200,6 +204,24 @@ Examples
    # Moved files:
    #   > docs/proposal.pdf -> archive/2025/proposal.pdf
 
+**After renaming the scanned root folder:**
+
+.. code-block:: bash
+
+   dof -d /path/to/renamed/tree
+
+   # Output:
+   # Wrote: /path/to/renamed/tree/treasure_map.xlsx
+   #
+   # Repaired links:
+   #   * reports/q4_summary.pdf
+   #   * notes/meeting_2025.docx
+   #
+   # Exit code: 0
+   #
+   # Every Location was still correct; only the stored absolute targets were
+   # stale, so they were regenerated from the new root.
+
 **Without move tracking:**
 
 .. code-block:: bash
@@ -243,13 +265,19 @@ Exit Codes
    * - 1
      - Error (see error message for details)
    * - 2
-     - Broken links are present in the map
+     - Unrepairable broken links are present in the map
 
 .. warning::
 
-   Exit code 2 is new. Scripts and CI steps that run ``dof --keep-missing``
-   against a tree containing deleted files will now fail unless they pass
-   ``--no-fail-on-broken``.
+   Exit code 2 is new as of 0.1.0. Scripts and CI steps that run
+   ``dof --keep-missing`` against a tree containing deleted files will now fail
+   unless they pass ``--no-fail-on-broken``.
+
+.. note::
+
+   Repaired links never affect the exit code. Since 0.1.2 a stale link whose file
+   this scan found is regenerated rather than reported broken, so a run that
+   previously exited 2 after the scan root was renamed now exits 0.
 
 
 Environment Variables

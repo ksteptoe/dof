@@ -74,6 +74,8 @@ create_or_update_treasure_map
       print(f"Wrote: {outcome.path}")
       for old_loc, new_loc in outcome.scan.moved_files:
           print(f"moved: {old_loc} -> {new_loc}")
+      for loc in outcome.scan.repaired_links:
+          print(f"repaired: {loc}")
       if outcome.scan.broken_links:
           raise SystemExit(2)
 
@@ -247,7 +249,14 @@ ScanResult
    .. py:attribute:: broken_links
       :type: List[str]
 
-      Locations of rows whose link could not be resolved.
+      Locations of rows whose link could not be resolved and could not be repaired.
+
+   .. py:attribute:: repaired_links
+      :type: List[str]
+
+      Locations of rows whose stored link target was stale and was regenerated from
+      the current scan root, or the configured SharePoint base. Repaired rows are not
+      reported broken and do not affect the CLI exit code.
 
    .. py:attribute:: changes
       :type: List[FileChange]
@@ -256,8 +265,9 @@ ScanResult
 
    .. py:method:: summary()
 
-      Return a human-readable summary of changes. ``Moved:`` and ``Broken:`` lines
-      are included only when the corresponding counts are non-zero.
+      Return a human-readable summary of changes. The ``Moved:``, ``Broken:`` and
+      ``Repaired:`` lines are included only when the corresponding counts are
+      non-zero.
 
       :rtype: str
 
@@ -277,7 +287,8 @@ FileChange
    .. py:attribute:: change_type
       :type: ChangeType
 
-      Type of change (NEW, UPDATED, UNCHANGED, DELETED, IGNORED, MOVED, BROKEN).
+      Type of change (NEW, UPDATED, UNCHANGED, DELETED, IGNORED, MOVED, BROKEN,
+      REPAIRED).
 
    .. py:attribute:: old_version
       :type: Optional[str]
@@ -351,7 +362,11 @@ ChangeType
 
    .. py:attribute:: BROKEN
 
-      The row's link could not be resolved.
+      The row's link could not be resolved, and could not be repaired.
+
+   .. py:attribute:: REPAIRED
+
+      The row's stored link target was stale and has been regenerated.
 
 
 Constants

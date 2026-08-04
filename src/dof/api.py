@@ -185,6 +185,7 @@ class ChangeType(Enum):
     IGNORED = "ignored"
     MOVED = "moved"
     BROKEN = "broken"
+    REPAIRED = "repaired"
 
 
 @dataclass
@@ -210,6 +211,7 @@ class ScanResult:
     ignored_files: List[str] = field(default_factory=list)
     moved_files: List[Tuple[str, str]] = field(default_factory=list)
     broken_links: List[str] = field(default_factory=list)
+    repaired_links: List[str] = field(default_factory=list)
     changes: List[FileChange] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -228,6 +230,8 @@ class ScanResult:
             lines.append(f"  Ignored:   {len(self.ignored_files)}")
         if self.broken_links:
             lines.append(f"  Broken:    {len(self.broken_links)}")
+        if self.repaired_links:
+            lines.append(f"  Repaired:  {len(self.repaired_links)}")
         return "\n".join(lines)
 
 
@@ -1014,6 +1018,67 @@ def _link_is_resolvable(
         return False
 
 
+def _repair_link_targets(
+    *,
+    updated_rows: Dict[str, Dict[str, object]],
+    found_by_location: Dict[str, FoundFile],
+    root_dir: Path,
+    found_locations: Set[str],
+    sharepoint_base_url: Optional[str],
+    scan_result: ScanResult,
+) -> None:
+    """Regenerate stale hyperlink targets for rows whose file was found by this scan.
+
+    Moving or renaming the root of a scanned tree leaves every relative ``Location``
+    correct while every stored absolute target still points at the old root. Such a row
+    is trivially repairable, so it is repaired here rather than reported as broken. Only
+    rows whose current target fails to resolve are touched, so a hand-edited hyperlink
+    that still works is never clobbered.
+
+    Runs before the status pass and mutates ``updated_rows`` and ``scan_result`` in place.
+
+    Parameters
+    ----------
+    updated_rows : dict
+        Internal row representations, keyed by location.
+    found_by_location : dict
+        Files discovered by this scan, keyed by relative location.
+    root_dir : pathlib.Path
+        Resolved root of the scanned tree.
+    found_locations : set of str
+        Locations discovered by this scan.
+    sharepoint_base_url : str or None
+        Configured SharePoint/OneDrive base URL, if any.
+    scan_result : ScanResult
+        Accumulating scan record; repaired locations are appended to it.
+    """
+    for loc in sorted(updated_rows, key=lambda s: s.lower()):
+        found_file = found_by_location.get(loc)
+        if found_file is None:
+            continue
+
+        row = updated_rows[loc]
+        if _link_is_resolvable(
+            row,
+            root_dir=root_dir,
+            found_locations=found_locations,
+            sharepoint_base_url=sharepoint_base_url,
+        ):
+            continue
+
+        link = row.get("Link")
+        if isinstance(link, dict):
+            text = str(link.get("text") or row.get("File Name") or found_file.filename)
+        else:
+            text = str(link or row.get("File Name") or found_file.filename)
+        row["Link"] = {
+            "target": _build_sharepoint_url(sharepoint_base_url, loc, found_file.abs_path),
+            "text": text,
+        }
+        scan_result.repaired_links.append(loc)
+        scan_result.changes.append(FileChange(loc, ChangeType.REPAIRED))
+
+
 def create_or_update_treasure_map(
     *,
     root_dir: Path,
@@ -1094,7 +1159,8 @@ def create_or_update_treasure_map(
     # We'll build a new in-memory table of rows, preserving existing rows + appending new ones.
     updated_rows: Dict[str, Dict[str, object]] = dict(existing_rows)
 
-    found_locations = {f.rel_location for f in found}
+    found_by_location = {f.rel_location: f for f in found}
+    found_locations = set(found_by_location)
     unmatched_found: List[FoundFile] = []
 
     for f in found:
@@ -1194,6 +1260,16 @@ def create_or_update_treasure_map(
                 meta.pop(loc, None)
                 scan_result.deleted_files.append(loc)
                 scan_result.changes.append(FileChange(loc, ChangeType.DELETED))
+
+    # Repair pass: a stale target for a file this scan found is repairable, not broken.
+    _repair_link_targets(
+        updated_rows=updated_rows,
+        found_by_location=found_by_location,
+        root_dir=root_dir,
+        found_locations=found_locations,
+        sharepoint_base_url=sharepoint_base_url,
+        scan_result=scan_result,
+    )
 
     # Final pass: settle Status for every surviving row (all formats, dry runs included).
     for loc in sorted(updated_rows, key=lambda s: s.lower()):

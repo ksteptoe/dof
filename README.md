@@ -169,14 +169,40 @@ the map can still work out where a document went. `Status`, by contrast, describ
 current scan only — it reverts to `OK` on the next scan that finds the file where the map
 says it is.
 
-## Broken Links
+## Broken and Repaired Links
 
-A row whose target cannot be resolved is marked `Status = Broken`, highlighted red in the
-workbook, and listed under `Broken links:` in the CLI output. **dof then exits with code
-2.**
+After each scan dof checks that every row's link still resolves, and **repairs what it
+can before reporting anything as broken**. If a row's file was found by the scan but its
+stored target no longer resolves, the target is regenerated from the current scan root
+(or from the configured SharePoint base). Repaired rows are listed under `Repaired
+links:` and **do not affect the exit code** — repair is a success, not a failure.
+
+```text
+Repaired links:
+  * reports/q4_summary.pdf
+  * notes/meeting_2025.docx
+```
+
+The common real-world trigger is a **moved root**: you rename or reorganise the top-level
+folder, or the whole tree turns up at a different absolute path — on another machine, or
+after OneDrive re-roots your local copy. Every relative `Location` is still correct, but
+every stored absolute link still points at the old root. Before v0.1.2 dof marked all of
+those rows `Broken` and exited 2. Now a plain re-run repairs them and exits 0:
+
+```bash
+dof -d /path/to/renamed/tree
+```
+
+Repair is targeted: a link that already resolves is never regenerated, so a hyperlink you
+edited by hand is not clobbered.
+
+`Broken` therefore means **dof cannot repair this** — not merely that the link is stale.
+A broken row is marked `Status = Broken`, highlighted red in the workbook, and listed
+under `Broken links:` in the CLI output. **dof then exits with code 2.**
 
 This mostly arises with `--keep-missing`, which deliberately keeps rows for files that
-are gone. Pass `--no-fail-on-broken` to keep the marking and the report but exit 0:
+are gone — those files really are missing, so there is nothing to repair. Pass
+`--no-fail-on-broken` to keep the marking and the report but exit 0:
 
 ```bash
 dof --keep-missing --no-fail-on-broken
@@ -195,7 +221,9 @@ still reports `OK`.
 |------|---------|
 | 0 | Success |
 | 1 | Error (see the message) |
-| 2 | Broken links present (suppress with `--no-fail-on-broken`) |
+| 2 | Unrepairable broken links present (suppress with `--no-fail-on-broken`) |
+
+Repaired links never cause a non-zero exit.
 
 ## Ignore Patterns
 

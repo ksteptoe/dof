@@ -281,3 +281,56 @@ def test_bc1_workbook_from_the_previous_release_upgrades_in_place(tmp_path: Path
     assert ws.cell(2, headers["Version"]).value == "1.0"
     assert ws.cell(2, headers["Status"]).value == api.STATUS_OK
     assert "Size" in _headers(wb[api.META_SHEET_NAME])
+
+
+def test_c9_root_rename_prints_repaired_links_and_exits_zero(tmp_path: Path) -> None:
+    """R8: a renamed root is repaired, listed in Location order, and is not a failure."""
+    old_root = tmp_path / "Sales - EMEA - Prospects - CEVA"
+    new_root = tmp_path / "CEVA" / "Sandalwood"
+    out = tmp_path / "out.xlsx"
+    _write(old_root / "Approvals" / "x.pptx", b"XXX")
+    _write(old_root / "Contracts" / "deal.pdf", b"DEAL")
+    _write(old_root / "readme.docx", b"README")
+
+    runner = CliRunner()
+    assert runner.invoke(cli, ["-d", str(old_root), "-o", str(out)]).exit_code == 0
+
+    new_root.parent.mkdir(parents=True, exist_ok=True)
+    old_root.rename(new_root)
+    res = runner.invoke(cli, ["-d", str(new_root), "-o", str(out)])
+
+    assert res.exit_code == 0
+    assert "Broken links:" not in res.output
+    assert "Repaired links:" in res.output
+    lines = [ln.strip() for ln in res.output.splitlines() if ln.strip().startswith("* ")]
+    assert lines == ["* Approvals/x.pptx", "* Contracts/deal.pdf", "* readme.docx"]
+
+    # The written hyperlinks point at the new root.
+    wb = load_workbook(out)
+    ws = wb[api.MAIN_SHEET_NAME]
+    headers = _headers(ws)
+    for r in range(2, ws.max_row + 1):
+        target = ws.cell(r, headers["Link"]).hyperlink.target
+        assert "Sales%20-%20EMEA" not in target and "Sales - EMEA" not in target
+        assert "Sandalwood" in target
+
+
+def test_c10_repaired_section_sits_between_ignored_and_broken(tmp_path: Path) -> None:
+    """Ordering of the CLI report sections, with a repairable and an unrepairable row."""
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    out = tmp_path / "out.xlsx"
+    _write(old_root / "keep.pdf", b"KEEP")
+    _write(old_root / "gone.docx", b"GONE")
+
+    runner = CliRunner()
+    assert runner.invoke(cli, ["-d", str(old_root), "-o", str(out)]).exit_code == 0
+
+    old_root.rename(new_root)
+    (new_root / "gone.docx").unlink()
+    res = runner.invoke(cli, ["-d", str(new_root), "-o", str(out), "--keep-missing"])
+
+    assert res.exit_code == BROKEN_LINKS_EXIT_CODE
+    assert "* keep.pdf" in res.output
+    assert "! gone.docx" in res.output
+    assert res.output.index("Repaired links:") < res.output.index("Broken links:")
