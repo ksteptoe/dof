@@ -8,9 +8,10 @@ State-of-play for `dof`. Read this first; update it after completing a task or r
 |---|---|
 | **Updated** | 2026-08-04 |
 | **Branch** | `main` (in sync with `origin/main`) |
-| **HEAD** | `425abbb` — Enforce coverage in CI and guard against a broken venv |
-| **Latest tag** | `v0.1.0` (tagged and pushed) |
-| **Published to PyPI** | **No** — `v0.1.0` is tagged but not uploaded |
+| **HEAD** | `38c4bda` — Publish as treasure-map instead of dof |
+| **Latest tag** | `v0.1.1` |
+| **Published to PyPI** | **Yes** — https://pypi.org/project/treasure-map/0.1.1/ |
+| **PyPI name** | **`treasure-map`** — install with `pip install treasure-map`, then use as `dof` |
 | **Working tree** | Clean |
 | **Gates** | lint clean · 83 passed / 2 skipped · coverage 88.71% (gate 85, enforced in CI) · docs build OK · `twine check` OK |
 | **CI** | Green on run 30883566481 — lint + 6-way test matrix (3.12/3.13 × ubuntu/macos/windows) |
@@ -64,12 +65,27 @@ Design record is in `PLAN.md` (excluded from the sdist by `MANIFEST.in`).
   design; `--no-fail-on-broken` suppresses it.
 - Moved/Deleted/Ignored/Broken sections now print on real runs, not just `--dry-run`.
 
+## The PyPI name — read before touching packaging
+
+The distribution is **`treasure-map`**; the import package and console script are both
+still **`dof`**. `pip install treasure-map`, then run `dof`.
+
+PyPI **refuses** the name `dof`. It is not taken (404 on the JSON API) — it is blocked,
+because PyPI rejects new names that collide after normalisation with common affixes
+stripped, and **`pydof` already exists**. `v0.1.0` was tagged before this was known and
+can never be published; it is left in place as an honest dead end, not force-moved.
+
+Consequences to remember:
+- A self-referential extra must name the *distribution*: `dev` depends on
+  `treasure-map[docs]`. Naming it `dof[docs]` breaks `pip install -e ".[dev]"` outright.
+- The Makefile keeps `PKG := dof` (import) and `DIST := treasure-map` (distribution)
+  separate. `release-show`'s `importlib.metadata.version` needs `DIST`.
+- Nothing in `src/` looks up distribution metadata — `__version__` comes from
+  setuptools_scm's generated `_version.py` — so `dof --version` is immune to the split.
+
 ## Open tasks
 
 **Next up**
-
-- [ ] **Publish `v0.1.0` to PyPI** — `make upload VENV="$HOME/.venvs/dof"`. Tagged but
-      not uploaded; awaiting Kevin's go-ahead. `make release` only tags and pushes.
 - [ ] **Pin `ruff` in CI.** The lint job does `pip install ruff` unpinned while
       `pyproject.toml` says `ruff>=0.6`, so a new ruff release can turn CI red
       spontaneously while local stays green. CI also runs `ruff check src tests` where
