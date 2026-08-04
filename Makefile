@@ -14,6 +14,11 @@ SHELL := $(shell which bash)
 .DEFAULT_GOAL := help
 
 # ---- Python / venv ----------------------------------------------------------
+# `?=` means VENV is also read from the environment, so a machine whose in-repo
+# .venv is unusable (see venv-check below) can be fixed once per shell with
+#     export VENV="$HOME/.venvs/dof"
+# rather than remembering VENV= on every make call. The default stays .venv so
+# CI runners and other machines behave exactly as before.
 VENV ?= .venv
 
 # ---- Environment install stamp ---------------------------------------------
@@ -59,7 +64,7 @@ UNIT_DIR   := tests/unit
 INTEG_DIR  := tests/integration
 SYSTEM_DIR := tests/system  # live/system tests (opt-in, uncached)
 
-.PHONY: help venv bootstrap precommit docs lint format \
+.PHONY: help venv venv-check bootstrap precommit docs lint format \
         test test-all test-live clean-tests \
         build upload version fetch-tags changelog changelog-md \
         release-show release release-patch release-minor release-major \
@@ -95,6 +100,36 @@ $(VENV)/pyvenv.cfg:
 
 venv: $(VENV)/pyvenv.cfg
 
+# ---- venv health preflight --------------------------------------------------
+# OneDrive intermittently leaves an in-repo .venv half-readable: the interpreter
+# is still on disk, so $(ENV_STAMP) is satisfied and make happily runs ruff /
+# pytest / sphinx against it — which then dies with a bare
+# `OSError: [Errno 22] Invalid argument` from deep inside an import. This probe
+# turns that into one actionable message. It costs a single interpreter start.
+#
+# Deliberately NOT changing the default VENV: the breakage is transient (the same
+# .venv works again later), CI runners are not on OneDrive, and hardcoding an
+# absolute path would break on Kevin's other machines.
+venv-check:
+	if [ ! -f "$(PY)" ]; then \
+	  echo "❌ No interpreter at $(PY)."; \
+	  echo "   Run: make bootstrap VENV=\"$(VENV)\""; \
+	  exit 1; \
+	fi
+	if ! "$(PY)" -c "import sysconfig, dof" >/dev/null 2>&1; then \
+	  echo "❌ The virtualenv at '$(VENV)' exists but is not usable."; \
+	  echo "   ($(PY) cannot import the project from its own site-packages.)"; \
+	  echo ""; \
+	  echo "   If this checkout is under OneDrive, that is almost certainly file"; \
+	  echo "   locking or an evicted cloud placeholder, not a real install problem."; \
+	  echo ""; \
+	  echo "   Rebuild it outside OneDrive:"; \
+	  echo "       make bootstrap VENV=\"\$$HOME/.venvs/$(PKG)\""; \
+	  echo "   then export it once so every later make call picks it up:"; \
+	  echo "       export VENV=\"\$$HOME/.venvs/$(PKG)\""; \
+	  exit 1; \
+	fi
+
 bootstrap: $(ENV_STAMP)
 	@echo "Environment ready."
 
@@ -103,16 +138,16 @@ precommit: bootstrap
 
 # -----------------------------------------------------------------------------#
 # Docs
-docs: $(ENV_STAMP)
+docs: $(ENV_STAMP) venv-check
 	"$(PY)" -m sphinx -b html docs docs/_build/html
 
 # -----------------------------------------------------------------------------#
 # Linting / Formatting
-lint: $(ENV_STAMP)
+lint: $(ENV_STAMP) venv-check
 	"$(PY)" -m ruff check .
 	"$(PY)" -m ruff format --check .
 
-format: $(ENV_STAMP)
+format: $(ENV_STAMP) venv-check
 	"$(PY)" -m ruff check --fix .
 	"$(PY)" -m ruff format .
 
@@ -130,7 +165,7 @@ define compute_dir_sig
 | LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $1}'
 endef
 
-$(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
+$(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP) venv-check
 	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -154,7 +189,7 @@ $(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	  echo "No changes detected; skipping unit tests."; \
 	fi
 
-$(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
+$(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP) venv-check
 	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -186,7 +221,7 @@ test: $(UNIT_STAMP) $(INTEG_STAMP)
 # NOTE: the coverage gate is NOT specified here. It lives in pyproject.toml under
 # [tool.coverage.report] fail_under, which pytest-cov honours automatically. Do not
 # reintroduce --cov-fail-under; one number, one place.
-test-all: $(ENV_STAMP)
+test-all: $(ENV_STAMP) venv-check
 	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml
 
 # A zero-collection run must never look like a pass: pytest exit code 5 is reported
@@ -194,7 +229,7 @@ test-all: $(ENV_STAMP)
 # NOTE: `$$?`/`$$status` — a single `$` would be eaten by Make before the shell sees it.
 # No --cov here on purpose: the coverage gate belongs to test-all and to the single
 # fail_under in pyproject.toml, and a live-only run would trip it spuriously.
-test-live: $(ENV_STAMP)
+test-live: $(ENV_STAMP) venv-check
 	set +e; \
 	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --no-cov; \
 	status=$$?; \
@@ -211,7 +246,7 @@ clean-tests:
 
 # -----------------------------------------------------------------------------#
 # Build & Publish
-build: $(ENV_STAMP)
+build: $(ENV_STAMP) venv-check
 	"$(PY)" -m pip install -U build
 	"$(PY)" -m build
 
@@ -248,7 +283,7 @@ ifeq ($(strip $(PATCH)),)
 PATCH := 0
 endif
 
-version: $(ENV_STAMP)
+version: $(ENV_STAMP) venv-check
 	@"$(PY)" -m setuptools_scm || true
 
 define CHANGELOG
@@ -271,7 +306,7 @@ changelog-md: fetch-tags
 	@printf "# Changelog\n\n## Since %s\n\n%s\n" "$(LAST_TAG)" "$(CHANGELOG)" > docs/CHANGELOG.md
 	@echo "✅ docs/CHANGELOG.md updated"
 
-release-show: fetch-tags $(ENV_STAMP)
+release-show: fetch-tags $(ENV_STAMP) venv-check
 	@echo "python exe:"; "$(PY)" -c "import sys; print(sys.executable)"
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
 	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
@@ -321,7 +356,7 @@ release-major: fetch-tags check-clean
 	git push origin "$$NEW"; \
 	echo "Tagged $$NEW"
 
-release: fetch-tags $(ENV_STAMP)
+release: fetch-tags $(ENV_STAMP) venv-check
 	@echo "=== Running full test suite before release ==="
 	$(MAKE) test-all
 	@echo "=== Changelog (from $(LAST_TAG) to HEAD) ==="
@@ -342,7 +377,7 @@ release: fetch-tags $(ENV_STAMP)
 # -----------------------------------------------------------------------------#
 # CLI convenience
 CLI_ARGS ?=
-run-cli: $(ENV_STAMP)
+run-cli: $(ENV_STAMP) venv-check
 	"$(PY)" -m $(PKG) $(CLI_ARGS)
 
 # -----------------------------------------------------------------------------#
