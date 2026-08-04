@@ -8,12 +8,12 @@ State-of-play for `dof`. Read this first; update it after completing a task or r
 |---|---|
 | **Updated** | 2026-08-04 |
 | **Branch** | `main` (in sync with `origin/main`) |
-| **HEAD** | `38c4bda` — Publish as treasure-map instead of dof |
-| **Latest tag** | `v0.1.1` |
-| **Published to PyPI** | **Yes** — https://pypi.org/project/treasure-map/0.1.1/ |
+| **HEAD** | `464b898` — Repair stale links instead of reporting them broken |
+| **Latest tag** | `v0.1.2` |
+| **Published to PyPI** | **Yes** — https://pypi.org/project/treasure-map/0.1.2/ |
 | **PyPI name** | **`treasure-map`** — install with `pip install treasure-map`, then use as `dof` |
 | **Working tree** | Clean |
-| **Gates** | lint clean · 83 passed / 2 skipped · coverage 88.71% (gate 85, enforced in CI) · docs build OK · `twine check` OK |
+| **Gates** | lint clean · 98 passed / 2 skipped · coverage 89.11% (gate 85, enforced in CI) · docs build OK · `twine check` OK |
 | **CI** | Green on run 30883566481 — lint + 6-way test matrix (3.12/3.13 × ubuntu/macos/windows) |
 
 ### Build/test commands on this machine
@@ -64,6 +64,23 @@ Design record is in `PLAN.md` (excluded from the sdist by `MANIFEST.in`).
 - **Exit code 2** when the map holds a broken link. `dof --keep-missing` now goes red by
   design; `--no-fail-on-broken` suppresses it.
 - Moved/Deleted/Ignored/Broken sections now print on real runs, not just `--dry-run`.
+
+## v0.1.2 — link repair
+
+Follow-up to a real bug report. v0.1.0 tracked files moving *within* a tree; it did not
+handle **the tree itself moving**. Renaming a scanned root left every relative `Location`
+correct and every file present, but the absolute `file://` target stored in each row
+pointed at the old root — so 12 rows were marked `Broken`, including the
+`treasure_map.xlsx` dof had just written.
+
+`_repair_link_targets()` now regenerates a stale target before the status pass, so
+**`Broken` means "dof cannot repair this"**, not "this happens to be stale". Repair is
+*targeted* — a link that already resolves is never regenerated, so hand-edited hyperlinks
+survive — and it never causes a non-zero exit. Reported as `Repaired links:` via
+`ScanResult.repaired_links` / `ChangeType.REPAIRED`.
+
+Rows kept by `--keep-missing` are never repair candidates: the file is genuinely gone, so
+there is nothing to repair. That is correct and deliberate.
 
 ## The PyPI name — read before touching packaging
 
