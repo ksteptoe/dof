@@ -2,6 +2,65 @@
 Changelog
 =========
 
+Version 0.1.3
+=============
+
+Infrastructure only. No file under ``src/`` changed, so the **library code is
+identical to 0.1.2**: same API, same CLI, same behaviour. Two packaging details do
+differ - the wheel ``METADATA`` now lists the new ``lint`` extra, and the sdist ships
+slightly different repository tooling - but nothing you can observe from
+``import dof`` or from the ``dof`` command has changed.
+
+It is not, however, a no-op for contributors.
+
+Fixed
+-----
+
+- **``make test`` used to report success whether or not the tests passed.** The
+  incremental-testing machinery works by writing a small "stamp" file after a
+  successful run and skipping the run next time if nothing relevant has changed. Two
+  faults in those recipes combined badly: the recipe discarded pytest's exit status,
+  so a red suite still wrote its stamp; and the signature used to decide whether
+  anything had changed always came out empty, so every subsequent run looked
+  unchanged. The net effect was that after one invocation, ``make test`` would skip
+  the suite and print success indefinitely, no matter what state the tests were in.
+  The recipes now propagate pytest's exit code - a failing suite fails the build and
+  writes no stamp - and compute a real content signature, so ``make test`` is
+  genuinely incremental again. **If you have been relying on** ``make test`` **for
+  local verification, treat its recent history as uninformative and re-run it.**
+- A partial-stage coverage gate that the above had been masking was corrected, so the
+  coverage threshold - which lives in ``pyproject.toml`` under
+  ``[tool.coverage.report] fail_under`` - is enforced exactly once, against the
+  aggregate of the whole run rather than against a single stage.
+
+Changed
+-------
+
+- **Ruff is now declared in one place.** A new ``lint`` extra in ``pyproject.toml``
+  pins ``ruff>=0.16.1,<0.17``; ``dev`` pulls it in, the CI lint job installs
+  ``.[lint]``, and ``.pre-commit-config.yaml`` moves to ``rev: v0.16.1``. Previously
+  three versions drifted independently: ``pyproject`` asked for ``ruff>=0.6``,
+  pre-commit pinned v0.6.9, and CI installed whatever was current.
+  **Contributor-visible:** running ``pip install -e ".[dev]"`` will move ruff to the
+  0.16 series, and some previously clean files may now report new violations. The
+  upper bound is deliberate: an open ``>=`` lets a fresh ruff release change the
+  default rule set and turn CI red while everyone's local checkout stays green.
+- CI lints the whole tree (``ruff check .``) rather than ``src tests`` only, matching
+  ``make lint`` and the pre-commit hooks. ``docs/conf.py``, ``tests/conftest.py`` and
+  the root tooling files are now linted in CI, where they silently were not.
+
+Added
+-----
+
+- The CI build job runs ``twine check dist/*``, so packaging metadata errors surface
+  on every push rather than at upload time.
+
+Removed
+-------
+
+- The stale ``.readthedocs.yml``, superseded by ``.readthedocs.yaml``. The old file
+  pinned Python 3.11, below the project's ``requires-python = ">=3.12"``.
+
 Version 0.1.2
 =============
 

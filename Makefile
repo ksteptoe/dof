@@ -59,8 +59,19 @@ PYTEST           := $(PY) -m pytest
 PYTEST_Q         := -q
 PYTEST_WARN      := --disable-warnings
 PYTEST_COV_BASE  := --cov=$(PKG)
-PYTEST_COV_UNIT  := $(PYTEST_COV_BASE) --cov-report= --cov-append
-PYTEST_COV_INTEG := $(PYTEST_COV_BASE) --cov-report= --cov-append
+# `--cov-fail-under=0` DISABLES the gate for these two partial runs; it is not a
+# second threshold. `make test` measures unit and integration separately, so each
+# stage on its own sees only part of the coverage (unit alone is ~78%) and would
+# trip fail_under spuriously. The real gate is the aggregate `coverage report` in
+# the `test` target below, which reads the one fail_under from pyproject.toml.
+# Do not put a number here.
+#
+# No `--cov-append`: each stage writes a SELF-CONTAINED data file to its own
+# COVERAGE_FILE (see UNIT_COV/INTEG_COV), and the aggregate step combines them.
+# Appending would make a stage's data depend on whatever ran before it, which is
+# exactly the coupling that let a failed run poison a later cached one.
+PYTEST_COV_UNIT  := $(PYTEST_COV_BASE) --cov-report= --cov-fail-under=0
+PYTEST_COV_INTEG := $(PYTEST_COV_BASE) --cov-report= --cov-fail-under=0
 PYTEST_XDIST    ?= -n auto
 PYTEST_TIMEOUT  ?= --timeout=60
 
@@ -165,60 +176,118 @@ $(STAMPS_DIR):
 UNIT_SIG    := $(STAMPS_DIR)/unit.sig
 INTEG_SIG   := $(STAMPS_DIR)/integration.sig
 
+# Cached per-stage coverage data, promoted alongside the stamp and the signature.
+# A stamp asserts "this stage passed at this signature"; the matching .coverage
+# file is the evidence, so the aggregate report is a pure function of the stamps
+# rather than of whatever happened to be left in ./.coverage. A skipped stage
+# still contributes its real data, and a FAILED stage promotes nothing.
+UNIT_COV    := $(STAMPS_DIR)/unit.coverage
+INTEG_COV   := $(STAMPS_DIR)/integration.coverage
+
+# NOTE ON `$$`: these recipes run under .ONESHELL with SHELL=bash, so every `$`
+# that the *shell* must see has to be written `$$` — a single `$` is consumed by
+# Make first. Both stamp recipes previously got this wrong in two ways:
+#   * `$( $(call compute_dir_sig,...) )` was read by Make as a reference to a
+#     variable whose name began with a space, so every signature was the empty
+#     string. Empty == empty, so after the very first run the stamps never
+#     invalidated and `make test` silently stopped running tests entirely.
+#   * `status=$?` expanded Make's automatic `$?` (out-of-date prerequisites,
+#     empty here as all prereqs are order-only) and `$status` expanded `$s` +
+#     "tatus", so the guard compared the literal string "tatus" against 5. Both
+#     `[` calls errored out inside an `if` condition, and a *failing* pytest run
+#     fell through to `touch $@` as a pass.
+# Exit code 5 (nothing collected) is now a loud failure, not a success, matching
+# `test-live`: an empty collection means test discovery broke.
 define compute_dir_sig
 { [ -d "$(1)" ] && find $(1) -type f -not -path "*/__pycache__/*" -print0 || true; } \
-| LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $1}'
+| LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $$1}'
 endef
 
-$(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP) venv-check
-	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
-	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
-	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
-	new_sig=$( printf "%s\n%s\n%s\n" "$tests_sig" "$code_sig" "$conf_sig" | sha1sum | awk '{print $1}' ); \
-	old_sig=$(cat $(UNIT_SIG) 2>/dev/null || echo -n); \
-	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
-	  echo "=== Running unit tests ==="; \
-	  rm -f .coverage; \
-	  set +e; \
-	  "$(PY)" -m pytest -q $(UNIT_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_UNIT); \
-	  status=$?; \
-	  set -e; \
-	  if [ "$status" -eq 5 ]; then \
-	    echo "No unit tests collected; treating as success."; \
-	  elif [ "$status" -ne 0 ]; then \
-	    exit $status; \
-	  fi; \
-	  echo "$new_sig" > $(UNIT_SIG); \
-	  touch $@; \
-	else \
-	  echo "No changes detected; skipping unit tests."; \
+# FORCE: without it make sees the stamp file already exists, decides the target is
+# up to date and never enters the recipe at all — so the signature comparison below
+# was unreachable and `make test` ran exactly once, then reported success forever
+# regardless of source changes. FORCE hands the caching decision to the signature
+# check, which is where it was always meant to live.
+FORCE:
+.PHONY: FORCE
+
+$(UNIT_STAMP): FORCE | $(STAMPS_DIR) $(ENV_STAMP) venv-check
+	tests_sig=$$( $(call compute_dir_sig,$(UNIT_DIR)) )
+	code_sig=$$( $(call compute_dir_sig,$(CODE_DIRS)) )
+	conf_sig=$$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' )
+	new_sig=$$( printf "%s\n%s\n%s\n" "$$tests_sig" "$$code_sig" "$$conf_sig" | sha1sum | awk '{print $$1}' )
+	old_sig=$$(cat $(UNIT_SIG) 2>/dev/null || true)
+	# The cached coverage file is part of what the stamp asserts, so a missing one
+	# invalidates the stamp just like a changed signature would. Without this the
+	# aggregate step could be asked to combine a file that is not there.
+	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $@ ] || [ ! -f $(UNIT_COV) ]; then
+	  echo "=== Running unit tests ==="
+	  rm -f $(UNIT_COV).tmp
+	  set +e
+	  COVERAGE_FILE=$(UNIT_COV).tmp \
+	    "$(PY)" -m pytest -q $(UNIT_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_UNIT)
+	  status=$$?
+	  set -e
+	  # Promote NOTHING on failure. The half-measured data is discarded and the
+	  # previously cached file, signature and stamp are all left untouched, so the
+	  # stage stays invalid and re-runs next time instead of poisoning the aggregate.
+	  if [ "$$status" -ne 0 ]; then
+	    rm -f $(UNIT_COV).tmp
+	    if [ "$$status" -eq 5 ]; then
+	      echo "*** FAIL: no unit tests collected from $(UNIT_DIR). Test discovery is broken."
+	      echo "*** A green here would mean unit coverage you do not actually have."
+	    fi
+	    exit $$status
+	  fi
+	  mv -f $(UNIT_COV).tmp $(UNIT_COV)
+	  echo "$$new_sig" > $(UNIT_SIG)
+	  touch $@
+	else
+	  echo "No changes detected; skipping unit tests."
 	fi
 
-$(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP) venv-check
-	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
-	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
-	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
-	new_sig=$( printf "%s\n%s\n%s\n" "$tests_sig" "$code_sig" "$conf_sig" | sha1sum | awk '{print $1}' ); \
-	old_sig=$(cat $(INTEG_SIG) 2>/dev/null || echo -n); \
-	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
-	  echo "=== Running integration tests ==="; \
-	  set +e; \
-	  "$(PY)" -m pytest -q $(INTEG_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_INTEG); \
-	  status=$?; \
-	  set -e; \
-	  if [ "$status" -eq 5 ]; then \
-	    echo "No integration tests collected; treating as success."; \
-	  elif [ "$status" -ne 0 ]; then \
-	    exit $status; \
-	  fi; \
-	  echo "$new_sig" > $(INTEG_SIG); \
-	  touch $@; \
-	else \
-	  echo "No changes detected; skipping integration tests."; \
+$(INTEG_STAMP): FORCE | $(STAMPS_DIR) $(ENV_STAMP) venv-check
+	tests_sig=$$( $(call compute_dir_sig,$(INTEG_DIR)) )
+	code_sig=$$( $(call compute_dir_sig,$(CODE_DIRS)) )
+	conf_sig=$$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' )
+	new_sig=$$( printf "%s\n%s\n%s\n" "$$tests_sig" "$$code_sig" "$$conf_sig" | sha1sum | awk '{print $$1}' )
+	old_sig=$$(cat $(INTEG_SIG) 2>/dev/null || true)
+	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $@ ] || [ ! -f $(INTEG_COV) ]; then
+	  echo "=== Running integration tests ==="
+	  rm -f $(INTEG_COV).tmp
+	  set +e
+	  COVERAGE_FILE=$(INTEG_COV).tmp \
+	    "$(PY)" -m pytest -q $(INTEG_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_INTEG)
+	  status=$$?
+	  set -e
+	  if [ "$$status" -ne 0 ]; then
+	    rm -f $(INTEG_COV).tmp
+	    if [ "$$status" -eq 5 ]; then
+	      echo "*** FAIL: no integration tests collected from $(INTEG_DIR). Test discovery is broken."
+	      echo "*** A green here would mean integration coverage you do not actually have."
+	    fi
+	    exit $$status
+	  fi
+	  mv -f $(INTEG_COV).tmp $(INTEG_COV)
+	  echo "$$new_sig" > $(INTEG_SIG)
+	  touch $@
+	else
+	  echo "No changes detected; skipping integration tests."
 	fi
 
+# Both stamps are guaranteed present and current by the time this recipe runs —
+# make aborts the whole target if either stage fails — so the two cached data
+# files describe exactly the tree that was just validated. Combining them here,
+# rather than reporting on ./.coverage, is what makes the aggregate figure honest
+# when a stage was skipped: a skipped stage contributes the real data from its
+# last passing run at the same signature, not nothing and not stale partial data.
+#
+# `--keep` because `coverage combine` deletes its inputs by default, which would
+# throw away the cache on the first report and force a full re-run every time.
 test: $(UNIT_STAMP) $(INTEG_STAMP)
 	@echo "=== Aggregated coverage report ==="
+	rm -f .coverage
+	"$(PY)" -m coverage combine --keep $(UNIT_COV) $(INTEG_COV)
 	"$(PY)" -m coverage report
 	"$(PY)" -m coverage xml
 	@echo "✅ Unit + Integration tests up-to-date (not live)"

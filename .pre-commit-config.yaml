@@ -6,9 +6,12 @@ default_language_version:
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9        # pin to a tag; update as needed
+    # Must match the ruff version resolved by the `lint` extra in pyproject.toml
+    # ("ruff>=0.16.1,<0.17"). Three places used to disagree — pyproject, this file,
+    # and an unpinned `pip install ruff` in CI. Bump all of them together.
+    rev: v0.16.1
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 

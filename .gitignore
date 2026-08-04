@@ -37,6 +37,9 @@ htmlcov/*
 junit*.xml
 coverage.xml
 .pytest_cache/
+# Incremental-test cache: stamps, content signatures and the per-stage coverage
+# data files that `make test` combines. All regenerable; never commit them.
+.stamps/
 
 # Build and docs folder/files
 build/*
